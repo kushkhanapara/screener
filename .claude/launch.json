@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "screener-prod",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server/index.js"],
+      "env": { "NODE_ENV": "production", "PORT": "8080" },
+      "port": 8080
+    }
+  ]
+}

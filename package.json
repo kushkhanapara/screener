@@ -1,0 +1,29 @@
+{
+  "name": "nse-stock-futures-screener",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first NSE single-stock-futures technical screener (live intraday + daily snapshot) via Upstox",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,magenta \"node --watch server/index.js\" \"npm --prefix client run dev\"",
+    "build": "npm --prefix client install && npm --prefix client run build",
+    "start": "cross-env NODE_ENV=production node server/index.js",
+    "install:all": "npm install && npm --prefix client install",
+    "verify:core": "node server/scripts/verifyCore.js",
+    "verify:universe": "node server/scripts/verifyUniverse.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "technicalindicators": "^3.1.0",
+    "upstox-js-sdk": "^2.14.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3"
+  }
+}
