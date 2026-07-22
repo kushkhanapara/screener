@@ -1,8 +1,29 @@
-import { getDailyCandles } from "../data/upstox.js";
-import { loadFuturesUniverse, getUnderlyings } from "../data/instruments.js";
+import { getDailyCandles, getLtp } from "../data/upstox.js";
+import { loadFuturesUniverse, getUnderlyings, getUniverse } from "../data/instruments.js";
 import { buildRows } from "../core/rows.js";
 import { evaluate } from "../core/strategy.js";
 import { FETCH_CONCURRENCY, DAILY_LOOKBACK_DAYS, HAS_TOKEN } from "../config.js";
+
+function monthLabel(ms) {
+  return new Date(ms).toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase();
+}
+
+/** Active futures contracts grouped by underlying (for the price chips). */
+function futuresByUnderlying() {
+  const map = new Map();
+  for (const c of getUniverse() || []) {
+    if (!map.has(c.underlying)) map.set(c.underlying, []);
+    map.get(c.underlying).push({
+      key: c.key,
+      label: c.label,
+      month: monthLabel(c.expiryMs),
+      expiry: c.expiry,
+      expiryMs: c.expiryMs,
+    });
+  }
+  for (const list of map.values()) list.sort((a, b) => a.expiryMs - b.expiryMs);
+  return map;
+}
 
 /**
  * Daily (EOD) snapshot service.
@@ -22,6 +43,7 @@ const state = {
   fetching: false,
   updatedAt: null,
   total: 0,
+  fetched: 0, // stocks processed so far in the in-flight refresh (progress)
   loaded: 0, // contracts with usable rows
   skipped: 0, // contracts skipped (insufficient history / NaN / fetch error)
   rows: new Map(), // key -> { contract, latest, prev }
@@ -66,6 +88,7 @@ export async function refresh() {
     const from = istDate(DAILY_LOOKBACK_DAYS);
     const nextRows = new Map();
     let skipped = 0;
+    state.fetched = 0; // reset progress for this run
 
     await pool(underlyings, FETCH_CONCURRENCY, async (u) => {
       try {
@@ -79,6 +102,8 @@ export async function refresh() {
         nextRows.set(u.underlying, { underlying: u.underlying, asOf, ...built });
       } catch {
         skipped++; // network / API failure -> skip this stock
+      } finally {
+        state.fetched++; // one more stock processed (success or skip)
       }
     });
 
@@ -93,30 +118,65 @@ export async function refresh() {
   }
 }
 
-/** Run the fixed strategy over the cached rows. */
-export function scan() {
-  const results = [];
-  for (const { underlying, asOf, latest, prev } of state.rows.values()) {
-    const { pass, reasons } = evaluate(latest, prev);
-    if (!pass) continue;
-    results.push({
-      contract: underlying, // daily view is the cash stock, shown by symbol
-      underlying,
-      expiry: asOf, // "as of" data date (no expiry for cash)
-      close: latest.close,
-      rsi14: latest.rsi14,
-      macdHist: latest.macdHist,
-      reasons,
-    });
+/**
+ * Run the two-sided strategy over the cached daily cash rows. Returns Long and
+ * Short result sets; futures prices are fetched (batched) for matched
+ * underlyings only, then attached as per-expiry chips.
+ */
+export async function scan() {
+  const long = [];
+  const short = [];
+
+  const mkRow = (underlying, asOf, latest, reasons) => ({
+    contract: underlying, // daily view is the cash stock, shown by symbol
+    underlying,
+    expiry: asOf, // "as of" data date (no expiry for cash)
+    close: latest.close,
+    rsi14: latest.rsi14,
+    rsiSignal: latest.rsiSignal,
+    macdHist: latest.macdHist,
+    reasons,
+    futures: [], // filled below
+  });
+
+  for (const { underlying, asOf, latest } of state.rows.values()) {
+    const l = evaluate(latest, "long");
+    if (l.pass) long.push(mkRow(underlying, asOf, latest, l.reasons));
+    const s = evaluate(latest, "short");
+    if (s.pass) short.push(mkRow(underlying, asOf, latest, s.reasons));
   }
-  results.sort((a, b) => a.underlying.localeCompare(b.underlying));
-  return {
+
+  long.sort((a, b) => a.underlying.localeCompare(b.underlying));
+  short.sort((a, b) => a.underlying.localeCompare(b.underlying));
+
+  // Attach futures prices for matched underlyings only (single batched LTP call).
+  const futMap = futuresByUnderlying();
+  const matched = new Set([...long, ...short].map((r) => r.underlying));
+  const futKeys = [];
+  for (const u of matched) for (const f of futMap.get(u) || []) futKeys.push(f.key);
+  let ltpMap = new Map();
+  if (futKeys.length && HAS_TOKEN) ltpMap = await getLtp(futKeys).catch(() => new Map());
+  const attach = (r) => {
+    r.futures = (futMap.get(r.underlying) || []).map((f) => ({
+      label: f.label,
+      month: f.month,
+      expiry: f.expiry,
+      ltp: ltpMap.get(f.key) ?? null,
+    }));
+  };
+  long.forEach(attach);
+  short.forEach(attach);
+
+  const meta = {
     updatedAt: state.updatedAt,
     total: state.total,
     loaded: state.loaded,
     skipped: state.skipped,
-    count: results.length,
-    results,
+  };
+  return {
+    ...meta,
+    long: { count: long.length, results: long },
+    short: { count: short.length, results: short },
   };
 }
 
@@ -125,6 +185,7 @@ export function status() {
     updatedAt: state.updatedAt,
     loaded: state.loaded,
     total: state.total,
+    fetched: state.fetched,
     skipped: state.skipped,
     fetching: state.fetching,
     error: state.error,

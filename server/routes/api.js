@@ -12,7 +12,7 @@ api.get("/status", (_req, res) => {
 });
 
 api.get("/strategy", (_req, res) => {
-  res.json({ conditions: describe() });
+  res.json({ long: describe("long"), short: describe("short") });
 });
 
 api.post("/refresh", (_req, res) => {
@@ -20,8 +20,12 @@ api.post("/refresh", (_req, res) => {
   res.json({ fetching: true });
 });
 
-api.post("/scan", (_req, res) => {
-  res.json(daily.scan());
+api.post("/scan", async (_req, res) => {
+  try {
+    res.json(await daily.scan());
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
 });
 
 // Live intraday -----------------------------------------------------------

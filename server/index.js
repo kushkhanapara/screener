@@ -7,6 +7,7 @@ import { attachLiveSocket } from "./ws/liveSocket.js";
 import * as daily from "./services/dailyService.js";
 import * as live from "./services/liveService.js";
 import { PORT, IS_PROD, HAS_TOKEN } from "./config.js";
+import { logger } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -29,15 +30,17 @@ const server = http.createServer(app);
 attachLiveSocket(server);
 
 server.listen(PORT, () => {
-  console.log(`\n▶ NSE stock-futures screener on http://localhost:${PORT}`);
-  console.log(`  mode: ${IS_PROD ? "production (serving client/dist)" : "dev (API only; run Vite separately)"}`);
+  logger.info(`▶ NSE stock-futures screener on http://localhost:${PORT}`);
+  logger.info(
+    `mode: ${IS_PROD ? "production (serving client/dist)" : "dev (API only; run Vite separately)"}`
+  );
   if (!HAS_TOKEN) {
-    console.warn("  ⚠ UPSTOX_ANALYTICS_TOKEN not set — daily + live data disabled until you set it.");
+    logger.warn("UPSTOX_ANALYTICS_TOKEN not set — daily + live data disabled until you set it.");
   }
 
   // Warm the daily cache on boot, then start the live supervisor.
   if (HAS_TOKEN) {
-    console.log("  warming daily cache…");
+    logger.info("warming daily cache…");
     daily.refresh();
   }
   live.init();

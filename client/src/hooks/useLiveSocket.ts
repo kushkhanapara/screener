@@ -1,26 +1,30 @@
 import { useEffect, useRef, useState } from "react"
-import { liveSocketUrl, type MatchRow } from "@/lib/api"
+import { liveSocketUrl, type ScripMatch } from "@/lib/api"
 
 type LiveSocketState = {
   connected: boolean
-  count: number
-  matching: MatchRow[]
+  counts: { long: number; short: number }
+  scrips: ScripMatch[]
   lastUpdated: string | null
-  entered: string[]
+  enteredLong: string[]
+  enteredShort: string[]
+}
+
+const initial: LiveSocketState = {
+  connected: false,
+  counts: { long: 0, short: 0 },
+  scrips: [],
+  lastUpdated: null,
+  enteredLong: [],
+  enteredShort: [],
 }
 
 /**
- * Connect to /ws/live and expose the live matching state. Auto-reconnects with
- * a short backoff. Tracks the most-recently-entered contracts so rows can flash.
+ * Connect to /ws/live and expose the two-sided live state. Auto-reconnects with
+ * a short backoff. Tracks the most-recently-entered scrips per side so rows flash.
  */
 export function useLiveSocket(): LiveSocketState {
-  const [state, setState] = useState<LiveSocketState>({
-    connected: false,
-    count: 0,
-    matching: [],
-    lastUpdated: null,
-    entered: [],
-  })
+  const [state, setState] = useState<LiveSocketState>(initial)
   const wsRef = useRef<WebSocket | null>(null)
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -40,9 +44,10 @@ export function useLiveSocket(): LiveSocketState {
           setState((s) => ({
             ...s,
             connected: true,
-            count: msg.count,
-            matching: msg.matching ?? [],
-            entered: msg.entered ?? [],
+            counts: msg.counts ?? { long: 0, short: 0 },
+            scrips: msg.scrips ?? [],
+            enteredLong: msg.entered?.long ?? [],
+            enteredShort: msg.entered?.short ?? [],
             lastUpdated: msg.ts ?? new Date().toISOString(),
           }))
         } catch {

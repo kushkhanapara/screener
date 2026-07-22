@@ -23,8 +23,12 @@ export function rsi(closes, period = 14) {
 }
 
 /**
- * MACD(fast, slow, signal). Returns { macd, signal, hist } as equal-length,
- * bar-aligned arrays (only entries where the signal line exists are kept).
+ * MACD(fast, slow, signal) — SMA VARIANT. The oscillator and signal are both
+ * computed with SIMPLE moving averages (not EMAs), per the strategy spec:
+ * 12/26/9 SMA on close. This is intentionally smoother/laggier than the classic
+ * EMA MACD — cleaner trend, slower entries.
+ * Returns { macd, signal, hist } as equal-length, bar-aligned arrays (only
+ * entries where the signal line exists are kept).
  */
 export function macd(closes, fast = 12, slow = 26, signal = 9) {
   const raw = MACD.calculate({
@@ -32,8 +36,8 @@ export function macd(closes, fast = 12, slow = 26, signal = 9) {
     fastPeriod: fast,
     slowPeriod: slow,
     signalPeriod: signal,
-    SimpleMAOscillator: false,
-    SimpleMASignal: false,
+    SimpleMAOscillator: true,
+    SimpleMASignal: true,
   });
   const valid = raw.filter((x) => x.signal !== undefined && x.MACD !== undefined);
   return {

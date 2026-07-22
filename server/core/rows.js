@@ -7,8 +7,9 @@ import { MIN_BARS } from "../config.js";
  * @param {Array<{close:number}>} candles  ordered oldest -> newest
  * @returns {{latest:Row, prev:Row}|null}   null if too few bars or NaN present
  *
- * A Row is: { close, rsi14, macd, macdSignal, macdHist, ma20, ma50, ma200, ema9, ema21 }
- * The same shape is used for daily candles and live 1-minute candles.
+ * A Row is: { close, rsi14, rsiSignal, macd, macdSignal, macdHist, sma34, ma20, ma50, ma200, ema5, ema9, ema21 }
+ * (rsiSignal is the EMA(5) of RSI(14) — a short-term RSI momentum signal line.)
+ * The same shape is used for daily candles and live 3m/15m candles.
  *
  * Alignment: the CORE series (rsi/macd/ma20/ma50/ema — the short-lookback ones
  * the strategy relies on) drive the common length so `latest`/`prev` line up
@@ -24,16 +25,19 @@ export function buildRows(candles) {
   if (closes.some((c) => !Number.isFinite(c))) return null;
 
   const rsi14 = rsi(closes, 14);
+  const rsiSig = ema(rsi14, 5); // 5-period EMA of RSI — RSI signal line
   const { macd: macdLine, signal: macdSignal, hist: macdHist } = macd(closes);
+  const sma34 = sma(closes, 34);
   const ma20 = sma(closes, 20);
   const ma50 = sma(closes, 50);
   const ma200 = sma(closes, 200); // may be shorter than the core window
+  const e5 = ema(closes, 5);
   const e9 = ema(closes, 9);
   const e21 = ema(closes, 21);
 
   // Right-align the core series (and closes) to their shortest common length.
-  const [aClose, aRsi, aMacd, aSignal, aHist, aMa20, aMa50, aE9, aE21] =
-    rightAlign(closes, rsi14, macdLine, macdSignal, macdHist, ma20, ma50, e9, e21);
+  const [aClose, aRsi, aRsiSig, aMacd, aSignal, aHist, aSma34, aMa20, aMa50, aE5, aE9, aE21] =
+    rightAlign(closes, rsi14, rsiSig, macdLine, macdSignal, macdHist, sma34, ma20, ma50, e5, e9, e21);
 
   const L = aClose.length;
   if (L < 2) return null;
@@ -45,12 +49,15 @@ export function buildRows(candles) {
   const row = (i) => ({
     close: at(aClose, i),
     rsi14: at(aRsi, i),
+    rsiSignal: at(aRsiSig, i),
     macd: at(aMacd, i),
     macdSignal: at(aSignal, i),
     macdHist: at(aHist, i),
+    sma34: at(aSma34, i),
     ma20: at(aMa20, i),
     ma50: at(aMa50, i),
     ma200: at(aMa200, i), // null if <200 bars
+    ema5: at(aE5, i),
     ema9: at(aE9, i),
     ema21: at(aE21, i),
   });

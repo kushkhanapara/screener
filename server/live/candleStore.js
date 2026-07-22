@@ -1,21 +1,27 @@
 import { MAX_LIVE_BARS } from "../config.js";
 
 /**
- * In-memory rolling 1-minute candle store, per instrument key.
+ * In-memory rolling candle store, per instrument key, at a fixed bucket size.
  *
- * Each candle: { time: minuteStartMs, open, high, low, close, volume }.
+ * Each candle: { time: bucketStartMs, open, high, low, close, volume }.
  * seed() loads an initial ascending window; addTick() extends/updates the
- * current minute as live ltpc ticks arrive. Only the last MAX_LIVE_BARS are kept.
+ * current bucket as live ltpc ticks arrive. Only the last MAX_LIVE_BARS kept.
+ *
+ * The bucket size is a constructor parameter so the same class backs the live
+ * 3-minute and 15-minute stores (both fed from the same cash tick stream).
  */
 
-const MINUTE = 60 * 1000;
-
 class CandleStore {
-  #data = new Map(); // key -> { bars: candle[], lastMin: number }
+  #data = new Map(); // key -> { bars: candle[], lastBucket: number }
+  #bucketMs;
 
-  /** Bucket a timestamp (ms) to its minute start. */
+  constructor(bucketMs) {
+    this.#bucketMs = bucketMs;
+  }
+
+  /** Bucket a timestamp (ms) to its bucket start. */
   #bucket(ms) {
-    return Math.floor(ms / MINUTE) * MINUTE;
+    return Math.floor(ms / this.#bucketMs) * this.#bucketMs;
   }
 
   /** Load an initial ascending candle window (from seeding). */
@@ -30,14 +36,14 @@ class CandleStore {
         volume: c.volume || 0,
       }))
       .filter((c) => Number.isFinite(c.close));
-    // Dedupe by minute (keep last), sort ascending, trim.
-    const byMin = new Map();
-    for (const b of bars) byMin.set(b.time, b);
-    const merged = [...byMin.values()].sort((a, b) => a.time - b.time);
+    // Dedupe by bucket (keep last), sort ascending, trim.
+    const byBucket = new Map();
+    for (const b of bars) byBucket.set(b.time, b);
+    const merged = [...byBucket.values()].sort((a, b) => a.time - b.time);
     const trimmed = merged.slice(-MAX_LIVE_BARS);
     this.#data.set(key, {
       bars: trimmed,
-      lastMin: trimmed.length ? trimmed[trimmed.length - 1].time : -1,
+      lastBucket: trimmed.length ? trimmed[trimmed.length - 1].time : -1,
     });
   }
 
@@ -46,21 +52,21 @@ class CandleStore {
     if (!Number.isFinite(price)) return;
     let entry = this.#data.get(key);
     if (!entry) {
-      entry = { bars: [], lastMin: -1 };
+      entry = { bars: [], lastBucket: -1 };
       this.#data.set(key, entry);
     }
-    const min = this.#bucket(tsMs);
-    if (min < entry.lastMin) return; // ignore stale ticks
+    const b = this.#bucket(tsMs);
+    if (b < entry.lastBucket) return; // ignore stale ticks
 
-    if (min === entry.lastMin && entry.bars.length) {
+    if (b === entry.lastBucket && entry.bars.length) {
       const c = entry.bars[entry.bars.length - 1];
       c.high = Math.max(c.high, price);
       c.low = Math.min(c.low, price);
       c.close = price;
       c.volume += qty;
     } else {
-      entry.bars.push({ time: min, open: price, high: price, low: price, close: price, volume: qty });
-      entry.lastMin = min;
+      entry.bars.push({ time: b, open: price, high: price, low: price, close: price, volume: qty });
+      entry.lastBucket = b;
       if (entry.bars.length > MAX_LIVE_BARS) entry.bars.shift();
     }
   }
@@ -83,4 +89,8 @@ class CandleStore {
   }
 }
 
-export const candleStore = new CandleStore();
+export { CandleStore };
+
+// Live cash-equity stores at the two strategy timeframes, keyed by cash key.
+export const store3m = new CandleStore(3 * 60 * 1000);
+export const store15m = new CandleStore(15 * 60 * 1000);

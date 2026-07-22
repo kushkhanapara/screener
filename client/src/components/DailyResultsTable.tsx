@@ -11,39 +11,31 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { cn } from "@/lib/utils"
-import type { MatchRow } from "@/lib/api"
+import { FuturesChips } from "@/components/FuturesChips"
+import { RsiMomentum } from "@/components/RsiMomentum"
+import type { DailyRow } from "@/lib/api"
 
 const fmt = (v: number, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : "—")
 
+/** Shorten a condition label into a compact badge tag. */
 function tag(reason: string): string {
-  if (reason.startsWith("Uptrend")) return "Uptrend"
-  if (reason.startsWith("Short-term")) return "EMA 9>21"
-  if (reason.startsWith("MACD")) return "MACD+"
-  if (reason.startsWith("RSI")) return "RSI 50–70"
+  if (reason.startsWith("LTP")) return reason.includes("above") ? "LTP>SMA34" : "LTP<SMA34"
+  if (reason.startsWith("EMA5")) return reason.includes("above") ? "EMA5>SMA34" : "EMA5<SMA34"
+  if (reason.startsWith("SMA34")) return reason.includes("above") ? "SMA34>SMA200" : "SMA34<SMA200"
+  if (reason.startsWith("RSI")) return reason.replace("RSI(14) ", "RSI ")
+  if (reason.startsWith("MACD")) return reason.includes("above") ? "MACD+" : "MACD−"
   return reason
 }
 
 type Props = {
-  rows?: MatchRow[]
+  rows?: DailyRow[]
   loading?: boolean
   error?: string | null
-  priceLabel?: string
-  firstColLabel?: string
-  lastColLabel?: string
-  enteredSet?: Set<string>
   emptyHint?: string
 }
 
-export function ResultsTable({
-  rows,
-  loading,
-  error,
-  priceLabel = "Close",
-  firstColLabel = "Contract",
-  lastColLabel = "Expiry",
-  enteredSet,
-  emptyHint = "No contracts match the strategy right now.",
-}: Props) {
+/** EOD matches for one side (daily cash candles) with per-expiry futures prices. */
+export function DailyResultsTable({ rows, loading, error, emptyHint }: Props) {
   if (error) {
     return (
       <Alert variant="destructive">
@@ -68,33 +60,34 @@ export function ResultsTable({
     return (
       <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed py-16">
         <Inbox className="size-7 opacity-60" />
-        <p className="text-sm">{emptyHint}</p>
+        <p className="text-sm">{emptyHint ?? "No stocks matched this side in the latest daily data."}</p>
       </div>
     )
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border">
+    <div className="overflow-x-auto rounded-xl border">
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
-            <TableHead>{firstColLabel}</TableHead>
-            <TableHead className="text-right">{priceLabel}</TableHead>
+            <TableHead>Stock</TableHead>
+            <TableHead className="text-right">Close</TableHead>
             <TableHead className="text-right">RSI(14)</TableHead>
             <TableHead className="text-right">MACD hist</TableHead>
             <TableHead>Matched conditions</TableHead>
-            <TableHead className="text-right">{lastColLabel}</TableHead>
+            <TableHead>Futures (LTP)</TableHead>
+            <TableHead className="text-right">As of</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.map((r) => (
-            <TableRow key={r.contract} className={cn(enteredSet?.has(r.contract) && "flash-in")}>
+            <TableRow key={r.contract} className="hover:bg-transparent">
               <TableCell className="font-mono text-[13px] font-medium">{r.contract}</TableCell>
               <TableCell className="text-right font-mono text-[13px] tabular-nums">
                 {fmt(r.close)}
               </TableCell>
-              <TableCell className="text-muted-foreground text-right font-mono text-[13px] tabular-nums">
-                {fmt(r.rsi14, 1)}
+              <TableCell className="text-right">
+                <RsiMomentum rsi={r.rsi14} signal={r.rsiSignal} />
               </TableCell>
               <TableCell
                 className={cn(
@@ -112,6 +105,9 @@ export function ResultsTable({
                     </Badge>
                   ))}
                 </div>
+              </TableCell>
+              <TableCell>
+                <FuturesChips futures={r.futures} />
               </TableCell>
               <TableCell className="text-muted-foreground text-right font-mono text-[13px]">
                 {r.expiry}

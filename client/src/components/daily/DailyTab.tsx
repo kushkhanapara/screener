@@ -11,7 +11,8 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { ResultsTable } from "@/components/ResultsTable"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { DailyResultsTable } from "@/components/DailyResultsTable"
 import { scan, refresh, getStatus, type DailyStatus, type ScanResult } from "@/lib/api"
 
 export function DailyTab({
@@ -33,7 +34,8 @@ export function DailyTab({
     try {
       const res = await scan()
       setData(res)
-      toast.success(`${res.count} matching contract${res.count === 1 ? "" : "s"}`)
+      const total = res.long.count + res.short.count
+      toast.success(`${res.long.count} long · ${res.short.count} short (${total} total)`)
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -57,6 +59,8 @@ export function DailyTab({
       toast.error(`Refresh failed: ${(e as Error).message}`)
     }
   }
+
+  const emptyHint = data ? undefined : 'Click "Run screen" to evaluate the strategy on the cached daily data.'
 
   return (
     <div className="space-y-4">
@@ -97,19 +101,28 @@ export function DailyTab({
           </CardAction>
         </CardHeader>
         <CardContent>
-          <ResultsTable
-            rows={data?.results}
-            loading={running}
-            error={error}
-            priceLabel="Close"
-            firstColLabel="Stock"
-            lastColLabel="As of"
-            emptyHint={
-              data
-                ? "No stocks matched the strategy in the latest daily data."
-                : "Click “Run screen” to evaluate the strategy on the cached daily data."
-            }
-          />
+          <Tabs defaultValue="long">
+            <TabsList>
+              <TabsTrigger value="long">Long{data ? ` · ${data.long.count}` : ""}</TabsTrigger>
+              <TabsTrigger value="short">Short{data ? ` · ${data.short.count}` : ""}</TabsTrigger>
+            </TabsList>
+            <TabsContent value="long" className="mt-4">
+              <DailyResultsTable
+                rows={data?.long.results}
+                loading={running}
+                error={error}
+                emptyHint={emptyHint ?? "No stocks matched the Long side in the latest daily data."}
+              />
+            </TabsContent>
+            <TabsContent value="short" className="mt-4">
+              <DailyResultsTable
+                rows={data?.short.results}
+                loading={running}
+                error={error}
+                emptyHint={emptyHint ?? "No stocks matched the Short side in the latest daily data."}
+              />
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
     </div>

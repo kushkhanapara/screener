@@ -1,4 +1,5 @@
 import { UPSTOX_TOKEN } from "../config.js";
+import { upstoxLimiter } from "./rateLimiter.js";
 
 /**
  * Low-level Upstox V3 REST helpers (historical + intraday candles).
@@ -41,6 +42,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function getJson(url, retries = 5) {
   let attempt = 0;
   for (;;) {
+    await upstoxLimiter.acquire(); // proactively stay under 50/s · 500/m · 2000/30m
     const res = await fetch(url, { headers: authHeaders() });
     if (res.ok) return res.json();
 
@@ -98,4 +100,52 @@ export async function getHistoricalMinuteCandles(instrumentKey, fromDate, toDate
   const json = await getJson(url);
   const candles = json?.data?.candles ?? [];
   return candles.map(mapCandle).reverse();
+}
+
+/**
+ * Generic historical candles at any supported unit/interval over a date range.
+ * Upstox v3 supports unit "minutes" with interval 1..300 (e.g. minutes/3,
+ * minutes/15), plus hours/days/weeks/months.
+ * @param {string} instrumentKey
+ * @param {string} unit      "minutes" | "hours" | "days" | "weeks" | "months"
+ * @param {number|string} interval  e.g. 3 or 15
+ * @param {string} fromDate  YYYY-MM-DD
+ * @param {string} toDate    YYYY-MM-DD
+ */
+export async function getHistoricalCandles(instrumentKey, unit, interval, fromDate, toDate) {
+  const key = encodeURIComponent(instrumentKey);
+  const url = `${BASE}/v3/historical-candle/${key}/${unit}/${interval}/${toDate}/${fromDate}`;
+  const json = await getJson(url);
+  const candles = json?.data?.candles ?? [];
+  return candles.map(mapCandle).reverse();
+}
+
+/**
+ * Last-traded price for many instruments in one call (market-quote LTP).
+ * Used to price futures for matched scrips only (not the whole universe).
+ * @param {string[]} instrumentKeys
+ * @returns {Promise<Map<string, number>>} instrumentKey -> ltp
+ */
+export async function getLtp(instrumentKeys) {
+  const out = new Map();
+  const keys = [...new Set(instrumentKeys)].filter(Boolean);
+  if (!keys.length) return out;
+
+  // Chunk to keep the query string sane; the endpoint accepts many keys per call.
+  const CHUNK = 200;
+  for (let i = 0; i < keys.length; i += CHUNK) {
+    const slice = keys.slice(i, i + CHUNK);
+    const qs = encodeURIComponent(slice.join(","));
+    const url = `${BASE}/v3/market-quote/ltp?instrument_key=${qs}`;
+    const json = await getJson(url).catch(() => null);
+    const data = json?.data ?? {};
+    // Response is keyed by "EXCHANGE:SYMBOL" (not the request instrument_key), but
+    // each value carries `instrument_token` = the original key. Map via that.
+    for (const v of Object.values(data)) {
+      const k = v?.instrument_token;
+      const ltp = Number(v?.last_price);
+      if (k && Number.isFinite(ltp)) out.set(k, ltp);
+    }
+  }
+  return out;
 }

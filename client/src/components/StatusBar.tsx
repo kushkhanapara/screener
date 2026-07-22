@@ -43,7 +43,9 @@ export function StatusBar({
         <Dot tone={dailyStatus?.updatedAt ? "on" : "off"} />
         Daily data{" "}
         <span className="text-foreground/80">
-          {dailyStatus?.fetching ? "refreshing…" : timeFmt(dailyStatus?.updatedAt)}
+          {dailyStatus?.fetching
+            ? `refreshing… ${dailyStatus.fetched}/${dailyStatus.total || "…"}`
+            : timeFmt(dailyStatus?.updatedAt)}
         </span>
       </span>
       <span className="text-border">·</span>
