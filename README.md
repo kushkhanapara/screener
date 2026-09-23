@@ -131,15 +131,18 @@ and more. `ma200` may be `null` when history is short — guard for it.
 
 ## Run locally
 
-Requires **Node 20+**.
+Requires **Node 22.5+** (the SQLite store uses `node:sqlite`).
 
 ```bash
 # 1. Install everything (root server deps + client deps)
 npm run install:all
 
-# 2. Configure the token
-cp .env.example .env
-#   then edit .env and set UPSTOX_ANALYTICS_TOKEN=... (see below)
+# 2. First-run setup: token, folders, your own database, and a check that
+#    Upstox answers. Asks for the token, or take it from the command line.
+npm run setup
+#   npm run setup -- --token=...   non-interactive
+#   npm run setup -- --warm        also caches today's daily candles (~1 min)
+#   npm run setup -- --db=data/my.db   database somewhere else
 
 # 3a. Dev mode (Express API + Vite with hot reload)
 npm run dev
@@ -152,6 +155,19 @@ npm start          # Express serves the app + API on http://localhost:8080
 
 Without a token the app still runs — it shows a clear "token not set" state and
 the daily/live data stays empty until you add one.
+
+### Nothing personal is in this repository
+
+Each person who clones it gets their own token and their own results:
+
+- **The token** lives in `.env`, which git ignores. `npm run setup` writes it
+  there; `.env.example` only documents the variable names.
+- **The database** (`data/screener.db`) is created empty on first run, by
+  `npm run setup` or by the server itself. Paper trades, positions and metrics
+  accumulate locally. **Back that one file up yourself** — it is not in git and
+  cannot be rebuilt.
+- **`data/` as a whole is ignored**, including `data/cache` (downloaded candles,
+  which re-download on demand and can grow to gigabytes) and `data/logs`.
 
 ### Verify the internals (no token needed)
 
