@@ -71,9 +71,49 @@ class CandleStore {
     }
   }
 
-  /** Ascending candle array for a key (or empty). */
+  /** Ascending candle array for a key (or empty). Includes the FORMING bar. */
   bars(key) {
     return this.#data.get(key)?.bars ?? [];
+  }
+
+  /** Bucket size in ms, so callers can reason about bar boundaries. */
+  get bucketMs() {
+    return this.#bucketMs;
+  }
+
+  /**
+   * Ascending candles EXCLUDING the still-forming bar.
+   *
+   * Evaluating the forming bar is what makes signals repaint: a 15m bar
+   * re-evaluated every minute yields 15 different answers, so a name can enter
+   * and exit a matching set several times within one bar. Anything that opens a
+   * position must read this, not bars().
+   *
+   * Closure is time-based rather than tick-based, so an illiquid name that stops
+   * ticking still resolves its last bar instead of hanging forever.
+   */
+  closedBars(key, now = Date.now()) {
+    const bars = this.#data.get(key)?.bars ?? [];
+    if (!bars.length) return bars;
+    const last = bars[bars.length - 1];
+    return last.time + this.#bucketMs > now ? bars.slice(0, -1) : bars;
+  }
+
+  /** Bucket start of the newest CLOSED bar, or -1 when there is none. */
+  lastClosedBucket(key, now = Date.now()) {
+    const closed = this.closedBars(key, now);
+    return closed.length ? closed[closed.length - 1].time : -1;
+  }
+
+  /**
+   * How many buckets have elapsed since the newest closed bar. A name whose data
+   * has gone stale (feed gap, halted scrip) returns a large number; callers use
+   * it to skip rather than act on a stale price.
+   */
+  stalenessBuckets(key, now = Date.now()) {
+    const last = this.lastClosedBucket(key, now);
+    if (last < 0) return Infinity;
+    return Math.floor((now - (last + this.#bucketMs)) / this.#bucketMs);
   }
 
   keys() {
@@ -94,3 +134,6 @@ export { CandleStore };
 // Live cash-equity stores at the two strategy timeframes, keyed by cash key.
 export const store3m = new CandleStore(3 * 60 * 1000);
 export const store15m = new CandleStore(15 * 60 * 1000);
+
+// NIFTY 3-minute bars, shared by every consumer so the index is seeded and fed once.
+export const storeIndex3m = new CandleStore(3 * 60 * 1000);

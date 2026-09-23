@@ -71,12 +71,12 @@ export function DailyResultsTable({ rows, loading, error, emptyHint }: Props) {
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             <TableHead>Stock</TableHead>
-            <TableHead className="text-right">Close</TableHead>
-            <TableHead className="text-right">RSI(14)</TableHead>
-            <TableHead className="text-right">MACD hist</TableHead>
-            <TableHead>Matched conditions</TableHead>
-            <TableHead>Futures (LTP)</TableHead>
-            <TableHead className="text-right">As of</TableHead>
+            <TableHead className="text-right">Closing price</TableHead>
+            <TableHead className="text-right" title="Momentum, 0–100. Above 60 strong buying, below 40 strong selling.">Momentum (RSI)</TableHead>
+            <TableHead className="text-right" title="Trend push. Positive = upward, negative = downward.">Trend push (MACD)</TableHead>
+            <TableHead>Rules matched</TableHead>
+            <TableHead title="Futures price for each expiry month">Futures price</TableHead>
+            <TableHead className="text-right">Expiry</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -92,7 +92,7 @@ export function DailyResultsTable({ rows, loading, error, emptyHint }: Props) {
               <TableCell
                 className={cn(
                   "text-right font-mono text-[13px] tabular-nums",
-                  r.macdHist >= 0 ? "text-emerald-600" : "text-red-600"
+                  r.macdHist >= 0 ? "text-up" : "text-down"
                 )}
               >
                 {fmt(r.macdHist, 3)}

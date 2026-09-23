@@ -1,11 +1,12 @@
 import { loadFuturesUniverse, getUniverse, getUnderlyings } from "../data/instruments.js";
 import { store3m, store15m } from "../live/candleStore.js";
-import { seedAll } from "../live/seed.js";
+import { seedAll, prewarmHistory } from "../live/seed.js";
 import { UpstoxFeed } from "../live/upstoxFeed.js";
 import { getLtp } from "../data/upstox.js";
 import { buildRows } from "../core/rows.js";
 import { evaluate, hasHistory } from "../core/strategy.js";
 import { isMarketOpen, HAS_TOKEN } from "../config.js";
+import { istMinutes, istDay, istDateString } from "../core/session.js";
 import { log } from "../logger.js";
 
 const logger = log("live");
@@ -34,12 +35,93 @@ const state = {
   lastPayload: emptyPayload(),
   minuteTimer: null,
   minuteTimeout: null,
+  prewarmedDate: null, // IST date the pre-market warm-up last completed (or started)
+  prewarming: false,
 };
+
+// Pre-market warm-up window, IST minutes.
+const PREWARM_FROM_MIN = 8 * 60 + 30;
+const PREWARM_UNTIL_MIN = 9 * 60 + 15;
 
 let broadcaster = () => {};
 export function setBroadcaster(fn) {
   broadcaster = fn || (() => {});
 }
+
+/**
+ * Feed sharing.
+ *
+ * Upstox's free tier 403s on a second parallel WebSocket, so there can only ever
+ * be ONE connection. This service owns it, and other consumers (the paper
+ * engine, which needs near-month futures and the NIFTY index) register their
+ * keys and tick handlers here rather than opening their own.
+ */
+const extraKeyProviders = []; // () => string[]  — consulted at connect time
+const priceListeners = []; // (frame) => void — throttled last-traded prices
+const tickListeners = []; // (key, ltp, tsMs, qty) => void
+const startedHooks = []; // () => void|Promise
+const stoppedHooks = []; // () => void
+
+/**
+ * Live last-traded prices for the UI.
+ *
+ * Ticks arrive continuously, but the screener payload is rebuilt once a minute
+ * and the paper/shadow views refresh on their own slower cadence, so prices on
+ * screen lagged the market by up to a minute. Every tick now updates this map;
+ * once a second the keys that changed go out as one small "prices" frame.
+ */
+const latestPrices = new Map(); // instrument key -> ltp
+const dirtyPrices = new Set();
+let priceTimer = null;
+const PRICE_PUSH_MS = 1000;
+
+/** Receive `{type:"prices", ts, ltp:{key:price}}` frames with changed keys only. */
+export function onPrices(fn) {
+  priceListeners.push(fn);
+}
+
+/** Every known price, for a client that has just connected. */
+export function getPricesSnapshot() {
+  return { type: "prices", ts: Date.now(), full: true, ltp: Object.fromEntries(latestPrices) };
+}
+
+function flushPrices() {
+  if (!dirtyPrices.size) return;
+  const ltp = {};
+  for (const k of dirtyPrices) ltp[k] = latestPrices.get(k);
+  dirtyPrices.clear();
+  const frame = { type: "prices", ts: Date.now(), ltp };
+  for (const fn of priceListeners) {
+    try {
+      fn(frame);
+    } catch {
+      /* a bad listener must not stop the others */
+    }
+  }
+}
+
+/** Register instrument keys to include in the single subscription. */
+export function registerKeys(fn) {
+  extraKeyProviders.push(fn);
+}
+
+/** Receive every tick from the shared feed, for any subscribed key. */
+export function onTick(fn) {
+  tickListeners.push(fn);
+}
+
+/** Called once the feed is connected and seeded, each session. */
+export function onStarted(fn) {
+  startedHooks.push(fn);
+}
+
+/** Called when the market closes and the feed is torn down. */
+export function onStopped(fn) {
+  stoppedHooks.push(fn);
+}
+
+/** Cash keys this service aggregates into the 3m/15m stores. */
+let cashKeySet = new Set();
 
 function emptyPayload() {
   return {
@@ -63,6 +145,7 @@ export function init() {
 }
 
 function supervise() {
+  maybePrewarm();
   const open = isMarketOpen();
   if (open && HAS_TOKEN && !state.started && !state.starting) {
     start().catch((e) => {
@@ -72,6 +155,39 @@ function supervise() {
   } else if (!open && state.started) {
     stop();
   }
+}
+
+/**
+ * Fetch the immutable history half of the seed before the open.
+ *
+ * Seeding used to begin at 09:15 and took ~4.5 minutes of rate-limited REST
+ * calls, so the session only went live around 09:20 — the OI baseline, the
+ * first futures prices and the first-bar entries all ran late. With history on
+ * disk, the 09:15 start only reads the cache.
+ */
+function maybePrewarm(now = Date.now()) {
+  if (!HAS_TOKEN || state.prewarming || state.started || state.starting) return;
+  const day = istDay(now);
+  if (day === 0 || day === 6) return;
+  const min = istMinutes(now);
+  if (min < PREWARM_FROM_MIN || min >= PREWARM_UNTIL_MIN) return;
+  const today = istDateString(now);
+  if (state.prewarmedDate === today) return;
+
+  state.prewarming = true;
+  state.prewarmedDate = today;
+  const t0 = Date.now();
+  (async () => {
+    if (!getUniverse()) await loadFuturesUniverse();
+    const underlyings = getUnderlyings() || [];
+    logger.info(`pre-market warm-up: fetching seed history for ${underlyings.length} underlyings…`);
+    const warmed = await prewarmHistory(underlyings);
+    logger.info(`pre-market warm-up done: ${warmed} underlyings in ${Math.round((Date.now() - t0) / 1000)}s`);
+  })()
+    .catch((e) => logger.error(`pre-market warm-up failed: ${e.message}`))
+    .finally(() => {
+      state.prewarming = false;
+    });
 }
 
 async function start() {
@@ -96,27 +212,70 @@ async function start() {
     for (const list of state.futByUnderlying.values()) list.sort((a, b) => a.expiryMs - b.expiryMs);
 
     const cashKeys = state.underlyings.map((u) => u.cashKey).filter(Boolean);
+    cashKeySet = new Set(cashKeys);
 
     logger.info(`seeding ${state.underlyings.length} underlyings (3m + 15m cash)…`);
     const seeded = await seedAll(state.underlyings);
-    logger.info(`seeded ${seeded} underlyings; opening cash feed (${cashKeys.length} keys)`);
+
+    // Keys other consumers need on the same connection (futures, index).
+    const extraKeys = [];
+    for (const provider of extraKeyProviders) {
+      try {
+        extraKeys.push(...(provider() || []));
+      } catch (e) {
+        logger.error(`key provider failed: ${e.message}`);
+      }
+    }
+    const allKeys = [...new Set([...cashKeys, ...extraKeys])];
+    logger.info(
+      `seeded ${seeded} underlyings; opening feed (${cashKeys.length} cash + ${extraKeys.length} extra = ${allKeys.length} keys)`
+    );
 
     state.feed = new UpstoxFeed({
       onTick: (key, ltp, tsMs, qty) => {
-        store3m.addTick(key, ltp, tsMs, qty);
-        store15m.addTick(key, ltp, tsMs, qty);
+        // Only cash keys feed the screener's candle stores; futures and index
+        // ticks are handled by their own consumers, so they do not bloat these.
+        if (cashKeySet.has(key)) {
+          store3m.addTick(key, ltp, tsMs, qty);
+          store15m.addTick(key, ltp, tsMs, qty);
+        }
         state.lastTickTs = tsMs;
+        if (Number.isFinite(ltp) && latestPrices.get(key) !== ltp) {
+          latestPrices.set(key, ltp);
+          dirtyPrices.add(key);
+        }
+        for (const fn of tickListeners) {
+          try {
+            fn(key, ltp, tsMs, qty);
+          } catch {
+            /* one bad listener must not stall the feed */
+          }
+        }
       },
-      onState: ({ connected, error }) => {
+      onState: ({ connected, error, fatal }) => {
         state.connected = connected;
         if (error) state.lastError = error;
+        if (fatal) {
+          state.fatal = error;
+          logger.error(error);
+        }
       },
     });
-    state.feed.connect(cashKeys);
+    state.feed.connect(allKeys);
 
     state.started = true;
+    clearInterval(priceTimer);
+    priceTimer = setInterval(flushPrices, PRICE_PUSH_MS);
     await recompute(); // initial set from seeded data
     scheduleMinute();
+
+    for (const fn of startedHooks) {
+      try {
+        await fn();
+      } catch (e) {
+        logger.error(`started hook failed: ${e.message}`);
+      }
+    }
   } finally {
     state.starting = false;
   }
@@ -124,8 +283,20 @@ async function start() {
 
 function stop() {
   logger.info("market closed — stopping feed");
+  // Consumers first, so the paper engine can flatten anything still open while
+  // it can still see prices.
+  for (const fn of stoppedHooks) {
+    try {
+      fn();
+    } catch (e) {
+      logger.error(`stopped hook failed: ${e.message}`);
+    }
+  }
   if (state.feed) state.feed.disconnect();
   state.feed = null;
+  clearInterval(priceTimer);
+  priceTimer = null;
+  flushPrices();
   state.started = false;
   state.connected = false;
   clearTimeout(state.minuteTimeout);
@@ -209,19 +380,25 @@ async function recompute() {
     });
   }
 
-  // Price the futures of matched scrips only (single batched LTP call).
+  // Price the futures of matched scrips. Contracts on the live feed (the near
+  // month) use their latest tick; only the rest need the batched REST call,
+  // which also keeps this minute loop out of the shared rate-limit queue.
   const futKeys = [];
   for (const s of scrips) {
-    for (const f of state.futByUnderlying.get(s.underlying) || []) futKeys.push(f.key);
+    for (const f of state.futByUnderlying.get(s.underlying) || []) {
+      if (!latestPrices.has(f.key)) futKeys.push(f.key);
+    }
   }
   let ltpMap = new Map();
   if (futKeys.length) ltpMap = await getLtp(futKeys).catch(() => new Map());
   for (const s of scrips) {
+    s.cashLtp = latestPrices.get(s.cashKey) ?? s.cashLtp;
     s.futures = (state.futByUnderlying.get(s.underlying) || []).map((f) => ({
+      key: f.key,
       label: f.label,
       month: f.month,
       expiry: f.expiry,
-      ltp: ltpMap.get(f.key) ?? null,
+      ltp: latestPrices.get(f.key) ?? ltpMap.get(f.key) ?? null,
     }));
   }
 
@@ -264,5 +441,8 @@ export function getStatus() {
     subscribed: state.started ? state.underlyings.length : 0,
     counts: state.lastPayload.counts,
     error: state.lastError,
+    // Set when the feed cannot recover on its own (e.g. a rejected token), so
+    // the UI can say so instead of showing a permanent "connecting…".
+    fatal: state.fatal ?? null,
   };
 }

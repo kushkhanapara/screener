@@ -10,6 +10,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getStrategy, type StrategyConditions } from "@/lib/api"
+import { conditionWord } from "@/lib/glossary"
 
 /** Read-only card describing the active Long/Short strategy (from /api/strategy). */
 export function StrategySection() {
@@ -26,9 +27,11 @@ export function StrategySection() {
       {items.map((c) => (
         <li key={c} className="flex items-start gap-2 text-sm">
           <CircleCheck
-            className={side === "long" ? "mt-0.5 size-4 shrink-0 text-emerald-600" : "mt-0.5 size-4 shrink-0 text-red-600"}
+            className={side === "long" ? "mt-0.5 size-4 shrink-0 text-up" : "mt-0.5 size-4 shrink-0 text-down"}
           />
-          <span>{c}</span>
+          <span>
+            {conditionWord(c)} <span className="text-muted-foreground font-mono text-[11px]">({c})</span>
+          </span>
         </li>
       ))}
     </ul>
@@ -37,10 +40,10 @@ export function StrategySection() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Active strategy</CardTitle>
+        <CardTitle>Screener rules</CardTitle>
         <CardDescription>
-          Evaluated on the underlying equity chart. A scrip qualifies when all of a side's
-          conditions hold (standing state).
+          Checked on each stock's own price chart (3-minute and 15-minute). A stock is listed when every rule
+          for that side is true right now. This screener only lists stocks — it doesn't trade.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -54,10 +57,10 @@ export function StrategySection() {
           <Tabs defaultValue="long">
             <TabsList>
               <TabsTrigger value="long">
-                <TrendingUp className="text-emerald-600" /> Long
+                <TrendingUp className="text-up" /> Buy rules
               </TabsTrigger>
               <TabsTrigger value="short">
-                <TrendingDown className="text-red-600" /> Short
+                <TrendingDown className="text-down" /> Sell rules
               </TabsTrigger>
             </TabsList>
             <TabsContent value="long" className="mt-4">

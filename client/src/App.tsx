@@ -2,17 +2,23 @@ import { useEffect, useState } from "react"
 import { LineChart } from "lucide-react"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Separator } from "@/components/ui/separator"
 import { StatusBar } from "@/components/StatusBar"
-import { StrategySection } from "@/components/StrategyCard"
 import { Disclaimer } from "@/components/Disclaimer"
 import { DailyTab } from "@/components/daily/DailyTab"
 import { LiveTab } from "@/components/live/LiveTab"
-import { getStatus, type DailyStatus, type LiveStatus } from "@/lib/api"
+import { PaperTab } from "@/components/paper/PaperTab"
+import { ShadowTab } from "@/components/shadow/ShadowTab"
+import { useLiveSocket } from "@/hooks/useLiveSocket"
+import { PricesContext } from "@/lib/prices"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { getStatus, getLiveStatus, type DailyStatus, type LiveStatus } from "@/lib/api"
 
 export default function App() {
   const [dailyStatus, setDailyStatus] = useState<DailyStatus | null>(null)
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null)
+  // One socket for the whole app — it carries both the screener feed and the
+  // paper-trading snapshot.
+  const live = useLiveSocket()
 
   useEffect(() => {
     let active = true
@@ -25,7 +31,9 @@ export default function App() {
         const s = await getStatus()
         if (!active) return
         setDailyStatus(s)
-        schedule(s.fetching ? 1000 : 5000) // poll faster while refreshing so the count moves
+        // A 1s poll re-rendered the whole app once a second during a refresh,
+        // on top of the socket pushes. 3s still shows progress moving.
+        schedule(s.fetching ? 3000 : 8000)
       } catch {
         if (active) schedule(5000)
       }
@@ -37,52 +45,88 @@ export default function App() {
     }
   }, [])
 
+  // Polled here rather than inside LiveTab: the StatusBar sits in this header
+  // and must keep reporting feed health even when the Live tab isn't mounted.
+  useEffect(() => {
+    let active = true
+    const tick = () =>
+      getLiveStatus()
+        .then((s) => active && setLiveStatus(s))
+        .catch(() => {})
+    tick()
+    const id = setInterval(tick, 5000)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
+  }, [])
+
   return (
-    <div className="min-h-screen">
+    <PricesContext.Provider value={live.prices}>
+    <TooltipProvider>
+    <div className="bg-background min-h-screen">
       <Toaster position="bottom-right" />
-      <div className="mx-auto max-w-7xl px-5 py-10 sm:px-8 sm:py-14">
-        <header className="space-y-5">
-          <div className="flex items-center gap-3">
-            <div className="bg-primary text-primary-foreground flex size-10 items-center justify-center rounded-xl">
-              <LineChart className="size-5" />
+
+      {/* Full-bleed terminal chrome: the header is a fixed bar and the content
+          uses the whole viewport width, because this is a monitoring screen —
+          a centred column wastes the space the tables need. */}
+      <Tabs defaultValue="paper" className="w-full gap-0">
+        {/* Opaque, not translucent: a blurred sticky bar has to re-composite
+            the content scrolling beneath it on every repaint, and this page
+            repaints constantly. */}
+        <header className="bg-card sticky top-0 z-30 border-b">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-2.5 sm:px-6">
+            <div className="flex items-center gap-2.5">
+              <div className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-md">
+                <LineChart className="size-4" />
+              </div>
+              <h1 className="text-[15px] leading-none font-semibold tracking-tight">
+                NSE Futures Terminal
+              </h1>
             </div>
-            <div>
-              <h1 className="text-xl font-semibold tracking-tight">NSE Stock-Futures Screener</h1>
-              <p className="text-muted-foreground text-sm">
-                Long &amp; Short technical screen on the equity chart — live 3m/15m &amp; daily.
-              </p>
-            </div>
-          </div>
-          <StatusBar dailyStatus={dailyStatus} live={liveStatus} />
-        </header>
 
-        <Separator className="my-8" />
-
-        <StrategySection />
-
-        <div className="mt-8">
-          <Tabs defaultValue="live" className="w-full">
-            <TabsList className="mx-auto h-10! p-1">
-              <TabsTrigger value="live" className="px-6 font-medium">
+            <TabsList className="h-8 p-0.5">
+              <TabsTrigger value="paper" className="px-4 text-[13px] font-medium">
+                Paper
+              </TabsTrigger>
+              <TabsTrigger value="shadow" className="px-4 text-[13px] font-medium">
+                Shadow
+              </TabsTrigger>
+              <TabsTrigger value="live" className="px-4 text-[13px] font-medium">
                 Live
               </TabsTrigger>
-              <TabsTrigger value="daily" className="px-6 font-medium">
+              <TabsTrigger value="daily" className="px-4 text-[13px] font-medium">
                 End of day
               </TabsTrigger>
             </TabsList>
-            <TabsContent value="live" className="mt-6">
-              <LiveTab onLiveStatus={setLiveStatus} />
-            </TabsContent>
-            <TabsContent value="daily" className="mt-6">
-              <DailyTab status={dailyStatus} onStatus={setDailyStatus} />
-            </TabsContent>
-          </Tabs>
-        </div>
 
-        <footer className="mt-12">
-          <Disclaimer />
-        </footer>
-      </div>
+            <div className="ml-auto">
+              <StatusBar dailyStatus={dailyStatus} live={liveStatus} />
+            </div>
+          </div>
+        </header>
+
+        <div className="w-full px-4 py-4 sm:px-6">
+          <TabsContent value="paper" className="mt-0">
+            <PaperTab snapshot={live.paper} />
+          </TabsContent>
+          <TabsContent value="shadow" className="mt-0">
+            <ShadowTab />
+          </TabsContent>
+          <TabsContent value="live" className="mt-0">
+            <LiveTab live={live} status={liveStatus} />
+          </TabsContent>
+          <TabsContent value="daily" className="mt-0">
+            <DailyTab status={dailyStatus} onStatus={setDailyStatus} />
+          </TabsContent>
+
+          <footer className="mt-8 border-t pt-4">
+            <Disclaimer />
+          </footer>
+        </div>
+      </Tabs>
     </div>
+    </TooltipProvider>
+    </PricesContext.Provider>
   )
 }

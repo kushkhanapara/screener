@@ -4,3 +4,7 @@ client/dist/
 client/node_modules/
 *.log
 .DS_Store
+
+# Paper-trading SQLite db + backtest candle cache. Holds accumulated results,
+# so it is local state, not source — back it up separately.
+data/

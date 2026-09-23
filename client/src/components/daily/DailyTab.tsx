@@ -76,13 +76,13 @@ export function DailyTab({
 
       <Card>
         <CardHeader>
-          <CardTitle>Daily snapshot</CardTitle>
+          <CardTitle>End-of-day screen</CardTitle>
           <CardDescription>
             {status
               ? `${status.loaded} of ${status.total} stocks screenable${
                   status.skipped ? ` · ${status.skipped} skipped` : ""
-                } · on underlying cash`
-              : "Screens each stock's underlying cash equity on daily candles."}
+                } · using daily candles`
+              : "Checks each stock's daily chart against the screener rules."}
           </CardDescription>
           <CardAction className="flex gap-2">
             <Button
@@ -103,15 +103,15 @@ export function DailyTab({
         <CardContent>
           <Tabs defaultValue="long">
             <TabsList>
-              <TabsTrigger value="long">Long{data ? ` · ${data.long.count}` : ""}</TabsTrigger>
-              <TabsTrigger value="short">Short{data ? ` · ${data.short.count}` : ""}</TabsTrigger>
+              <TabsTrigger value="long">Buy setups{data ? ` · ${data.long.count}` : ""}</TabsTrigger>
+              <TabsTrigger value="short">Sell setups{data ? ` · ${data.short.count}` : ""}</TabsTrigger>
             </TabsList>
             <TabsContent value="long" className="mt-4">
               <DailyResultsTable
                 rows={data?.long.results}
                 loading={running}
                 error={error}
-                emptyHint={emptyHint ?? "No stocks matched the Long side in the latest daily data."}
+                emptyHint={emptyHint ?? "No stocks matched the buy rules in the latest daily data."}
               />
             </TabsContent>
             <TabsContent value="short" className="mt-4">
@@ -119,7 +119,7 @@ export function DailyTab({
                 rows={data?.short.results}
                 loading={running}
                 error={error}
-                emptyHint={emptyHint ?? "No stocks matched the Short side in the latest daily data."}
+                emptyHint={emptyHint ?? "No stocks matched the sell rules in the latest daily data."}
               />
             </TabsContent>
           </Tabs>

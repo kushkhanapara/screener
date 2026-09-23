@@ -20,6 +20,25 @@ export const FETCH_CONCURRENCY = Number(process.env.FETCH_CONCURRENCY) || 4;
 // Minimum bars required before we compute indicators for a contract.
 export const MIN_BARS = Number(process.env.MIN_BARS) || 60;
 
+/**
+ * Trading capital available to EACH strategy, in rupees.
+ *
+ * Real money is the binding constraint the engine was missing: a position
+ * blocks margin until it is closed, so the next signal can only be taken if
+ * enough is free. Without this the engine happily held 80 positions at once,
+ * which is not a portfolio anyone could actually run — and it made the metrics
+ * meaningless, because they measured trades that could never have been placed.
+ */
+export const CAPITAL_PER_STRATEGY = Number(process.env.CAPITAL_PER_STRATEGY) || 200_000;
+
+/**
+ * Fraction of contract value blocked as margin on an NSE stock-futures
+ * position. Actual SPAN + exposure varies by scrip and volatility (roughly
+ * 15–25%); this is a flat approximation, so treat position counts as indicative
+ * rather than exact. Raise it to be more conservative.
+ */
+export const FUTURES_MARGIN_PCT = Number(process.env.FUTURES_MARGIN_PCT) || 0.2;
+
 // Rolling window of 1-minute candles kept per contract in the live store.
 export const MAX_LIVE_BARS = Number(process.env.MAX_LIVE_BARS) || 500;
 

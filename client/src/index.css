@@ -2,12 +2,21 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
     --font-heading: var(--font-sans);
-    --font-sans: 'Inter Variable', sans-serif;
+    --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+    /* Every meaningful figure in this app is a number in a column, so the mono
+       face is doing most of the visual work. Without this the browser falls
+       back to Consolas/Courier, which is what made the old build look cheap. */
+    --font-mono: 'JetBrains Mono Variable', ui-monospace, 'Cascadia Mono', monospace;
+
+    --color-up: var(--up);
+    --color-down: var(--down);
+    --color-flat: var(--flat);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -48,73 +57,100 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * Terminal palette.
+ *
+ * Dark is the primary design; light is a faithful counterpart rather than an
+ * afterthought, because the "d" key toggles between them.
+ *
+ * Colour carries meaning and nothing else: cyan marks the active/selected
+ * element, amber warns, and green/red are reserved exclusively for profit and
+ * loss. Nothing decorative is coloured — on a screen full of numbers, a stray
+ * accent reads as a signal.
+ */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    /* Light counterpart: cool near-white, same accents. */
+    --background: #F7F8FA;
+    --foreground: #10131A;
+    --card: #FFFFFF;
+    --card-foreground: #10131A;
+    --popover: #FFFFFF;
+    --popover-foreground: #10131A;
+    --primary: #0E7490;
+    --primary-foreground: #FFFFFF;
+    --secondary: #EDEFF3;
+    --secondary-foreground: #10131A;
+    --muted: #EDEFF3;
+    --muted-foreground: #616A79;
+    --accent: #E6EAF0;
+    --accent-foreground: #10131A;
+    --destructive: #DC2626;
+
+    --up: #047857;
+    --down: #DC2626;
+    --flat: #616A79;
+
+    --border: #DFE3EA;
+    --input: #DFE3EA;
+    --ring: #38BDF8;
+
+    --chart-1: #0E7490;
+    --chart-2: #047857;
+    --chart-3: #B45309;
+    --chart-4: #DC2626;
+    --chart-5: #616A79;
+
+    --radius: 0.5rem;
+
+    --sidebar: #FFFFFF;
+    --sidebar-foreground: #10131A;
+    --sidebar-primary: #0E7490;
+    --sidebar-primary-foreground: #FFFFFF;
+    --sidebar-accent: #EDEFF3;
+    --sidebar-accent-foreground: #10131A;
+    --sidebar-border: #DFE3EA;
+    --sidebar-ring: #38BDF8;
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --background: #0B0D10;
+    --foreground: #E6E9EF;
+    --card: #14171C;
+    --card-foreground: #E6E9EF;
+    --popover: #14171C;
+    --popover-foreground: #E6E9EF;
+    --primary: #38BDF8;
+    --primary-foreground: #0B0D10;
+    --secondary: #1C2028;
+    --secondary-foreground: #E6E9EF;
+    --muted: #1C2028;
+    --muted-foreground: #8A929E;
+    --accent: #1C2028;
+    --accent-foreground: #E6E9EF;
+    --destructive: #F87171;
+
+    --up: #34D399;
+    --down: #F87171;
+    --flat: #8A929E;
+
+    --border: #232833;
+    --input: #232833;
+    --ring: #38BDF8;
+
+    --chart-1: #38BDF8;
+    --chart-2: #34D399;
+    --chart-3: #F5B042;
+    --chart-4: #F87171;
+    --chart-5: #8A929E;
+
+    --sidebar: #14171C;
+    --sidebar-foreground: #E6E9EF;
+    --sidebar-primary: #38BDF8;
+    --sidebar-primary-foreground: #0B0D10;
+    --sidebar-accent: #1C2028;
+    --sidebar-accent-foreground: #E6E9EF;
+    --sidebar-border: #232833;
+    --sidebar-ring: #38BDF8;
 }
 
 @layer base {
@@ -123,16 +159,43 @@
     }
   body {
     @apply bg-background text-foreground;
+    /* Numerals must never shift width between ticks: a column of prices
+       updating every few seconds visibly jitters otherwise. */
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
     }
   html {
     @apply font-sans;
     }
 }
 
-/* Briefly highlight a row when a contract newly enters the live matching set. */
+/*
+ * Compact density.
+ *
+ * This is a monitoring screen — the more positions, picks and trades visible
+ * without scrolling, the more useful it is. Applied at the primitive level so
+ * every table inherits it rather than each one carrying its own overrides.
+ */
+@layer components {
+  [data-slot="table-head"] {
+    @apply h-8 px-2.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase;
+  }
+  [data-slot="table-cell"] {
+    @apply px-2.5 py-1.5;
+  }
+  [data-slot="table"] {
+    @apply text-[13px];
+  }
+  /* Numeric columns get the mono face and hard-aligned digits. */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Briefly highlight a row when something newly enters a set. */
 @keyframes flash-in {
   from {
-    background-color: color-mix(in oklch, var(--primary) 9%, transparent);
+    background-color: color-mix(in oklch, var(--primary) 14%, transparent);
   }
   to {
     background-color: transparent;
@@ -140,4 +203,28 @@
 }
 .flash-in {
   animation: flash-in 2s ease-out;
+}
+
+/* Quiet scrollbars — a dense dark UI should not be framed by bright gutters. */
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
+  }
 }

@@ -11,12 +11,37 @@ const { MarketDataStreamerV3, ApiClient } = pkg;
  * ping/pong is automatic. We surface a simple onTick(key, ltp, tsMs, qty) plus
  * connection-state callbacks.
  */
+/**
+ * Work around a crash in upstox-js-sdk.
+ *
+ * Streamer.js calls `this.streamer.clearSubscriptions()` when its auto-reconnect
+ * retries are exhausted, but MarketDataFeederV3 only defines that method
+ * privately — so the cleanup path throws `clearSubscriptions is not a function`
+ * from inside a timer, which is an uncaught exception that kills the process.
+ *
+ * Any sustained disconnect therefore takes the whole server down, which for a
+ * long-running trading tool is far worse than a dead feed. Patching the
+ * prototype fixes every future instance, including the ones reconnect creates.
+ */
+function patchSdkCleanupBug(streamer) {
+  const feeder = streamer?.streamer;
+  if (!feeder) return false;
+  const proto = Object.getPrototypeOf(feeder);
+  if (proto && typeof proto.clearSubscriptions !== "function") {
+    proto.clearSubscriptions = function clearSubscriptions() {};
+  }
+  return true;
+}
+
 export class UpstoxFeed {
   constructor({ onTick, onState } = {}) {
     this.onTick = onTick || (() => {});
     this.onState = onState || (() => {});
     this.streamer = null;
     this.connected = false;
+    this.fatalError = null;
+    this.authFailures = 0;
+    this.firstAuthFailureAt = 0;
   }
 
   /** Extract the last-traded price from a decoded ltpc feed, defensively. */
@@ -37,10 +62,13 @@ export class UpstoxFeed {
 
     const streamer = new MarketDataStreamerV3(instrumentKeys, "ltpc");
     this.streamer = streamer;
-    streamer.autoReconnect(true, 2, 20); // enable, interval(s), retries
+    // interval(s), retries — 5s x 60 spans ~5 minutes, long enough to ride out
+    // a transient auth or network fault rather than giving up in 40 seconds.
+    streamer.autoReconnect(true, 5, 60);
 
     streamer.on("open", () => {
       this.connected = true;
+      this.authFailures = 0; // a successful connect clears the transient run
       // Ensure the full set is subscribed (constructor keys + explicit subscribe).
       try {
         streamer.subscribe(instrumentKeys, "ltpc");
@@ -69,7 +97,38 @@ export class UpstoxFeed {
       this.onState({ connected: false, event: "close" });
     });
     streamer.on("error", (err) => {
-      this.onState({ connected: this.connected, event: "error", error: String(err?.message || err) });
+      const msg = String(err?.message || err);
+
+      // Upstox returns transient 401s on tokens that are demonstrably valid, so
+      // one is not grounds for giving up — the feed must ride it out. Only a
+      // sustained run of them means the token is actually dead.
+      if (msg.includes("401") || /unauthor/i.test(msg)) {
+        this.authFailures++;
+        if (this.authFailures === 1) this.firstAuthFailureAt = Date.now();
+
+        const spanMs = Date.now() - this.firstAuthFailureAt;
+        if (this.authFailures >= 8 && spanMs >= 3 * 60 * 1000) {
+          this.fatalError =
+            `Upstox rejected the feed token ${this.authFailures} times over ` +
+            `${Math.round(spanMs / 60000)} minutes. Update UPSTOX_ANALYTICS_TOKEN and restart.`;
+          try {
+            streamer.autoReconnect(false);
+          } catch {
+            /* already stopping */
+          }
+          this.onState({ connected: false, event: "error", error: this.fatalError, fatal: true });
+          return;
+        }
+
+        this.onState({
+          connected: false,
+          event: "error",
+          error: `auth rejected (attempt ${this.authFailures}) — retrying`,
+        });
+        return;
+      }
+
+      this.onState({ connected: this.connected, event: "error", error: msg });
     });
     streamer.on("reconnecting", () => {
       this.connected = false;
@@ -77,6 +136,16 @@ export class UpstoxFeed {
     });
 
     streamer.connect();
+
+    // `this.streamer` is assigned inside connect(), so the patch target may not
+    // exist yet; retry briefly rather than assuming either ordering.
+    if (!patchSdkCleanupBug(streamer)) {
+      let tries = 0;
+      const timer = setInterval(() => {
+        if (patchSdkCleanupBug(streamer) || ++tries > 20) clearInterval(timer);
+      }, 250);
+      timer.unref?.();
+    }
   }
 
   static #parse(data) {

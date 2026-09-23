@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils"
 import { FuturesChips } from "@/components/FuturesChips"
 import { RsiMomentum } from "@/components/RsiMomentum"
 import type { ScripMatch, Side, TfState, Timeframe } from "@/lib/api"
+import { livePrice, usePrices } from "@/lib/prices"
 
 const fmt = (v: number | null | undefined, d = 2) =>
   v != null && Number.isFinite(v) ? v.toFixed(d) : "—"
@@ -35,7 +36,7 @@ function TfBadge({ tf, side, label }: { tf: TfState; side: Side; label: Timefram
   const matched = side === "long" ? tf?.long : tf?.short
   return matched ? (
     <Badge
-      className="gap-1 border-transparent bg-emerald-600/15 font-medium text-emerald-700 dark:text-emerald-400"
+      className="gap-1 border-transparent bg-up/15 font-medium text-up"
       title={`${label} matches ${side}`}
     >
       <Check /> {label}
@@ -49,8 +50,8 @@ function TfBadge({ tf, side, label }: { tf: TfState; side: Side; label: Timefram
 
 function TrendBadge({ trend }: { trend: ScripMatch["trend"] }) {
   const map = {
-    bullish: "bg-emerald-600/15 text-emerald-700 dark:text-emerald-400",
-    bearish: "bg-red-600/15 text-red-700 dark:text-red-400",
+    bullish: "bg-up/15 text-up",
+    bearish: "bg-down/15 text-down",
     neutral: "bg-muted text-muted-foreground",
   } as const
   return (
@@ -67,6 +68,7 @@ type Props = {
 
 /** Live matches for one side (Long/Short), sorted with both-timeframe hits first. */
 export function LiveResultsTable({ scrips, side, enteredSet, emptyHint }: Props) {
+  const prices = usePrices()
   const rows = (scrips ?? [])
     .filter((s) => (side === "long" ? s.longMatch : s.shortMatch))
     .sort((a, b) => {
@@ -90,14 +92,14 @@ export function LiveResultsTable({ scrips, side, enteredSet, emptyHint }: Props)
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
-            <TableHead>Scrip</TableHead>
-            <TableHead className="text-right">LTP</TableHead>
-            <TableHead className="text-right">RSI(14)</TableHead>
-            <TableHead className="text-right">MACD hist</TableHead>
-            <TableHead>Trend</TableHead>
+            <TableHead>Stock</TableHead>
+            <TableHead className="text-right" title="Last traded price">Price now</TableHead>
+            <TableHead className="text-right" title="Momentum, 0–100. Above 60 strong buying, below 40 strong selling. Arrow: above/below its signal line.">Momentum (RSI)</TableHead>
+            <TableHead className="text-right" title="Trend push. Positive = upward push, negative = downward.">Trend push (MACD)</TableHead>
+            <TableHead title="Overall direction on the 15-minute chart">Trend</TableHead>
             <TableHead>3m</TableHead>
             <TableHead>15m</TableHead>
-            <TableHead>Futures (LTP)</TableHead>
+            <TableHead title="Futures price for each expiry month">Futures price</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -113,13 +115,13 @@ export function LiveResultsTable({ scrips, side, enteredSet, emptyHint }: Props)
                     {s.underlying}
                     {s.conflict && (
                       <span title="Long on one timeframe, Short on the other" className="inline-flex">
-                        <TriangleAlert className="size-3.5 text-amber-500" aria-label="conflict" />
+                        <TriangleAlert className="size-3.5 text-chart-3" aria-label="conflict" />
                       </span>
                     )}
                   </span>
                 </TableCell>
                 <TableCell className="text-right font-mono text-[13px] tabular-nums">
-                  {fmt(s.cashLtp)}
+                  {fmt(livePrice(prices, s.cashKey, s.cashLtp))}
                 </TableCell>
                 <TableCell className="text-right">
                   <RsiMomentum rsi={p?.rsi14} signal={p?.rsiSignal} />
@@ -127,7 +129,7 @@ export function LiveResultsTable({ scrips, side, enteredSet, emptyHint }: Props)
                 <TableCell
                   className={cn(
                     "text-right font-mono text-[13px] tabular-nums",
-                    (p?.macdHist ?? 0) >= 0 ? "text-emerald-600" : "text-red-600"
+                    (p?.macdHist ?? 0) >= 0 ? "text-up" : "text-down"
                   )}
                 >
                   {fmt(p?.macdHist, 3)}

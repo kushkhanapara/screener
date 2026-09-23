@@ -114,3 +114,13 @@ export function getUniverse() {
 export function getUnderlyings() {
   return cachedUnderlyings;
 }
+
+/** Nearest-expiry futures contract per underlying (empty until the universe loads). */
+export function getNearMonthContracts() {
+  const nearest = new Map();
+  for (const c of cachedContracts || []) {
+    const cur = nearest.get(c.underlying);
+    if (!cur || c.expiryMs < cur.expiryMs) nearest.set(c.underlying, c);
+  }
+  return nearest;
+}

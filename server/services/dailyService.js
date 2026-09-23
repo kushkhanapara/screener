@@ -1,8 +1,68 @@
 import { getDailyCandles, getLtp } from "../data/upstox.js";
 import { loadFuturesUniverse, getUnderlyings, getUniverse } from "../data/instruments.js";
 import { buildRows } from "../core/rows.js";
+import { rsi, macdEma, atr } from "../core/indicators.js";
 import { evaluate } from "../core/strategy.js";
+import { istDateString } from "../core/session.js";
 import { FETCH_CONCURRENCY, DAILY_LOOKBACK_DAYS, HAS_TOKEN } from "../config.js";
+
+/**
+ * Daily-timeframe inputs that intraday strategies need but cannot compute from
+ * intraday bars: a previous-day close to measure the day's move against, and
+ * RSI/MACD on daily candles.
+ *
+ * MACD here is the EMA variant deliberately — a strategy specified against the
+ * standard MACD would be measuring something else entirely if fed the SMA one.
+ *
+ * `today` is a parameter so the replay can compute the stats as they stood on a
+ * past session.
+ */
+export function dailyStatsFrom(candles, today = istDateString(Date.now())) {
+  if (!Array.isArray(candles) || candles.length < 30) return null;
+  const closes = candles.map((c) => c.close).filter(Number.isFinite);
+  if (closes.length < 30) return null;
+
+  const r = rsi(closes, 14);
+  const m = macdEma(closes);
+
+  // During a session the final candle is today's, still forming. The previous
+  // close is the last one that belongs to an earlier day.
+  let prevClose = null;
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if (String(candles[i].time).slice(0, 10) < today) {
+      prevClose = candles[i].close;
+      break;
+    }
+  }
+
+  // Today's volatility against this stock's own last year: a low percentile
+  // can't clear costs, a very high one puts the stop inside the noise.
+  const atrSeries = atr(candles, 14);
+  const offset = candles.length - atrSeries.length;
+  const atrPcts = atrSeries
+    .map((a, k) => (a / candles[k + offset].close) * 100)
+    .filter(Number.isFinite)
+    .slice(-250);
+  const latestAtrPct = atrPcts.length ? atrPcts[atrPcts.length - 1] : null;
+  const atrPctPercentile =
+    atrPcts.length >= 60 ? (atrPcts.filter((v) => v <= latestAtrPct).length / atrPcts.length) * 100 : null;
+
+  const last20 = candles.slice(-20).filter((c) => Number.isFinite(c.close) && Number.isFinite(c.volume));
+  const avgTurnover20 = last20.length
+    ? last20.reduce((s, c) => s + c.close * c.volume, 0) / last20.length
+    : null;
+
+  return {
+    rsi14: r.length ? r[r.length - 1] : null,
+    macd: m.macd.length ? m.macd[m.macd.length - 1] : null,
+    macdHist: m.hist.length ? m.hist[m.hist.length - 1] : null,
+    prevClose,
+    lastClose: closes[closes.length - 1],
+    atrPct: latestAtrPct,
+    atrPctPercentile,
+    avgTurnover20,
+  };
+}
 
 function monthLabel(ms) {
   return new Date(ms).toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase();
@@ -47,8 +107,14 @@ const state = {
   loaded: 0, // contracts with usable rows
   skipped: 0, // contracts skipped (insufficient history / NaN / fetch error)
   rows: new Map(), // key -> { contract, latest, prev }
+  daily: new Map(), // underlying -> { rsi14, macd, macdHist, prevClose, lastClose }
   error: null,
 };
+
+/** Daily-timeframe stats for one underlying, for intraday strategies. */
+export function getDailyStats(underlying) {
+  return state.daily.get(underlying) ?? null;
+}
 
 /** IST calendar date (YYYY-MM-DD) offset by `daysBack`. */
 function istDate(daysBack = 0) {
@@ -87,12 +153,19 @@ export async function refresh() {
     const to = istDate(0);
     const from = istDate(DAILY_LOOKBACK_DAYS);
     const nextRows = new Map();
+    const nextDaily = new Map();
     let skipped = 0;
     state.fetched = 0; // reset progress for this run
 
     await pool(underlyings, FETCH_CONCURRENCY, async (u) => {
       try {
         const candles = await getDailyCandles(u.cashKey, from, to);
+
+        // Computed even when buildRows rejects the series: the intraday
+        // strategies need these and have a lower bar than the screener does.
+        const stats = dailyStatsFrom(candles);
+        if (stats) nextDaily.set(u.underlying, stats);
+
         const built = buildRows(candles);
         if (!built) {
           skipped++;
@@ -107,6 +180,7 @@ export async function refresh() {
       }
     });
 
+    state.daily = nextDaily;
     state.rows = nextRows;
     state.loaded = nextRows.size;
     state.skipped = skipped;

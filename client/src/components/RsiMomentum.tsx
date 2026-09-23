@@ -3,10 +3,10 @@ import { cn } from "@/lib/utils"
 
 /** Zone label + color from the 60 / 50 / 40 bands. */
 function zone(rsi: number) {
-  if (rsi >= 60) return { label: "Aggressive overbought", cls: "text-emerald-600" }
-  if (rsi >= 50) return { label: "Bullish (50–60)", cls: "text-emerald-600/70" }
-  if (rsi > 40) return { label: "Bearish (40–50)", cls: "text-red-600/70" }
-  return { label: "Aggressive oversold", cls: "text-red-600" }
+  if (rsi >= 60) return { label: "Aggressive overbought", cls: "text-up" }
+  if (rsi >= 50) return { label: "Bullish (50–60)", cls: "text-up/70" }
+  if (rsi > 40) return { label: "Bearish (40–50)", cls: "text-down/70" }
+  return { label: "Aggressive oversold", cls: "text-down" }
 }
 
 /**

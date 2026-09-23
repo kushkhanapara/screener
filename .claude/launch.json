@@ -4,20 +4,46 @@
     {
       "name": "screener-api",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["--watch", "server/index.js"],
+      "runtimeArgs": [
+        "--watch",
+        "server/index.js"
+      ],
       "port": 8080
     },
     {
       "name": "screener-client",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "client", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "client",
+        "run",
+        "dev"
+      ],
       "port": 5173
     },
     {
       "name": "screener-prod",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["server/index.js"],
-      "env": { "NODE_ENV": "production", "PORT": "8080" },
+      "runtimeArgs": [
+        "server/index.js"
+      ],
+      "env": {
+        "NODE_ENV": "production",
+        "PORT": "8080"
+      },
+      "port": 8080
+    },
+    {
+      "name": "screener-demo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "server/index.js"
+      ],
+      "env": {
+        "UPSTOX_ANALYTICS_TOKEN": "",
+        "PAPER_DB_PATH": "data/demo.db",
+        "PORT": "8080"
+      },
       "port": 8080
     }
   ]
