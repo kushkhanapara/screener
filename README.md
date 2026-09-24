@@ -127,6 +127,28 @@ Two things in the original worth knowing about, left as-is but documented:
 `ctx` carries `rows` per timeframe, `atr`, `vwap`, `relStrength`, `sessionVolume`
 and more. `ma200` may be `null` when history is short — guard for it.
 
+#### VWAP + Volume Profile (research, kept separate)
+
+Everything for this strategy lives in `server/strategies/vwapvp/`, apart from
+the others while it is being learned. It is **not** in the live registry, so
+paper trading never runs it, and it has its own exit engine
+(`vwapvp/engine.js`) that sits on top of the shared paper engine without
+changing it. The only shared code it touches is the replay's `--vwapvp` switch.
+
+The strategy trades Trader Dale's two setups on 3m cash bars: a pullback into
+VWAP (or the 1σ band) when the session VWAP slopes, and a band-to-VWAP rotation
+when it is flat. A touch alone never trades: the level needs at least two of
+*close near it*, *a dual POC there* (the consolidation box's and the trend
+leg's volume profiles agree), and *a prior swing high/low*. Stops sit 1 ATR
+behind that zone, a bar *closing* beyond the zone ends the trade
+(`invalidated`), rotation targets VWAP, and trend trades move to break-even at
+the prior swing and then trail 1.5 ATR.
+
+```bash
+npm run replay -- --vwapvp     # cached sessions, beside VWAP Snap-back
+npm run replay:vwapvp          # 12 months
+```
+
 ---
 
 ## Run locally

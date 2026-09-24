@@ -7,4 +7,4 @@ client/node_modules/
 
 # Paper-trading SQLite db + backtest candle cache. Holds accumulated results,
 # so it is local state, not source — back it up separately.
-data/
+/data/
