@@ -1,9 +1,10 @@
-import { Activity, Briefcase, CalendarDays, Clock, Receipt, TrendingUp } from "lucide-react"
+import { Activity, Briefcase, CalendarDays, Clock, LineChart, Receipt, TrendingUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { InfoTip } from "@/components/ui/info-tip"
 import { pct, rMultiple, rupees, toneClass, clock } from "@/components/paper/format"
 import { TERMS } from "@/lib/glossary"
 import type { PaperSnapshot } from "@/lib/api"
+import { useTick } from "@/lib/priceStore"
 
 function Cell({
   icon: Icon,
@@ -52,10 +53,32 @@ function dayTypeLabel(type: string | undefined) {
   }
 }
 
+const signed = (v: number | null | undefined) =>
+  v == null ? "—" : `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}%`
+
+/**
+ * Nifty, re-read from the latest tick rather than the 3-second snapshot, so the
+ * header moves with the market. Both percentages are worked out from the same
+ * price: one against yesterday's close (includes the overnight gap), one
+ * against today's open (what an intraday strategy could act on).
+ */
+function useNifty(snapshot: PaperSnapshot) {
+  const n = snapshot.nifty
+  const ltp = useTick(n?.key)?.ltp ?? n?.ltp ?? null
+  const move = (from: number | null | undefined) =>
+    from != null && from > 0 && ltp != null ? ((ltp - from) / from) * 100 : null
+  return {
+    ltp,
+    fromOpen: move(n?.open) ?? n?.pctFromOpen ?? null,
+    fromPrevClose: move(n?.prevClose) ?? n?.pctFromPrevClose ?? null,
+  }
+}
+
 /** All paper strategies together, in one line: is it running, and is it making money? */
 export function SummaryStrip({ snapshot, openCount, openPnl }: { snapshot: PaperSnapshot; openCount: number; openPnl: number }) {
   const t = snapshot.totals
   const live = snapshot.running && snapshot.marketOpen
+  const nifty = useNifty(snapshot)
 
   const state = !snapshot.hasToken
     ? { label: "No Upstox token", tone: "text-down" }
@@ -66,13 +89,27 @@ export function SummaryStrip({ snapshot, openCount, openPnl }: { snapshot: Paper
         : { label: "Starting…", tone: "text-chart-3" }
 
   return (
-    <div className="divide-border grid grid-cols-2 divide-y rounded-xl border sm:grid-cols-3 sm:divide-y-0 lg:grid-cols-7 [&>*]:border-r-0 sm:[&>*:not(:last-child)]:border-r">
+    <div className="divide-border grid grid-cols-2 divide-y rounded-xl border sm:grid-cols-3 sm:divide-y-0 lg:grid-cols-8 [&>*]:border-r-0 sm:[&>*:not(:last-child)]:border-r">
       <Cell
         icon={Activity}
         label="Status"
         value={state.label}
         tone={state.tone}
         sub={live ? `last checked ${clock(snapshot.lastEvalTs)}` : "runs 9:15 AM – 3:30 PM"}
+      />
+      <Cell
+        icon={LineChart}
+        label="Nifty now"
+        value={nifty.ltp != null ? nifty.ltp.toLocaleString("en-IN", { maximumFractionDigits: 0 }) : "—"}
+        tone={toneClass(nifty.fromPrevClose)}
+        sub={
+          nifty.fromPrevClose != null
+            ? `${signed(nifty.fromPrevClose)} since yesterday's close · ${signed(nifty.fromOpen)} since the open`
+            : nifty.fromOpen != null
+              ? `${signed(nifty.fromOpen)} since today's open`
+              : "waiting for prices"
+        }
+        tip="Two different moves. Since yesterday's close is the number the news quotes — it counts the overnight gap. Since today's open is what the strategies can actually trade, because the gap happened while the market was shut."
       />
       <Cell
         icon={CalendarDays}
@@ -87,7 +124,7 @@ export function SummaryStrip({ snapshot, openCount, openPnl }: { snapshot: Paper
         }
         sub={
           snapshot.dayType?.movePct != null
-            ? `Nifty ${snapshot.dayType.movePct >= 0 ? "+" : "−"}${Math.abs(snapshot.dayType.movePct).toFixed(2)}% · steadiness ${(snapshot.dayType.efficiency ?? 0).toFixed(2)}`
+            ? `${signed(snapshot.dayType.movePct)} from the open · steadiness ${(snapshot.dayType.efficiency ?? 0).toFixed(2)}`
             : "decided after ~9:45"
         }
         tip={TERMS.dayType}

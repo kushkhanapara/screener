@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { store3m, store15m, storeIndex3m } from "../live/candleStore.js";
 import { seedWindow } from "../live/seed.js";
+import { getDailyCandles } from "../data/upstox.js";
 import { getUniverse, getUnderlyings } from "../data/instruments.js";
 import { list as listStrategies, get as getStrategy, familyOf } from "../strategies/index.js";
 import { buildContext, regimeAllows } from "../strategies/context.js";
@@ -25,7 +26,7 @@ import {
 } from "../paper/selection.js";
 import { buildReport } from "../paper/report.js";
 import { CAPITAL_PER_STRATEGY } from "../config.js";
-import { istMinutes, sessionStartMs } from "../core/session.js";
+import { istMinutes, istDateString, sessionBars, sessionStartMs } from "../core/session.js";
 import { HAS_TOKEN, isMarketOpen } from "../config.js";
 import * as live from "./liveService.js";
 import * as daily from "./dailyService.js";
@@ -66,6 +67,10 @@ const state = {
   dayStates: new Map(), // strategyId -> {lostNames, taken, skippedForQuality}, this session
   confluence: createConfluence(SELECTION),
   lastEvalTs: null,
+  // Nifty as the screen shows it: live price, today's open, yesterday's close.
+  // Two different moves matter — from the open (what the strategies can trade)
+  // and from yesterday's close (the number the news quotes).
+  nifty: { ltp: null, open: null, prevClose: null, prevCloseDate: null },
   counts: { signals: 0, trades: 0 },
   error: null,
   // Bumped whenever a position opens or closes. Everything derived from the
@@ -137,6 +142,7 @@ function subscriptionKeys() {
 function handleTick(key, ltp, tsMs, qty) {
   if (key === NIFTY_KEY) {
     state.indexStore.addTick(key, ltp, tsMs, qty);
+    state.nifty.ltp = ltp; // every tick, so the header moves with the market
     return;
   }
   const tracked = state.futPrices.has(key) || isFuturesKey(key);
@@ -216,7 +222,52 @@ async function onSessionStart() {
   } catch (e) {
     logger.error(`index seed failed: ${e.message}`);
   }
+  await loadNiftyPrevClose();
   scheduleEvaluation();
+}
+
+/**
+ * Yesterday's Nifty close, once a session. Without it the page can only show
+ * the move since the open, which on a gap day reads far smaller than the move
+ * everyone else quotes (24 Sept 2026: −0.68% from the open, −1.64% from the
+ * previous close, because it opened 0.96% lower).
+ */
+async function loadNiftyPrevClose() {
+  const today = istDateString(Date.now());
+  if (state.nifty.prevCloseDate && state.nifty.prevCloseDate < today && state.nifty.prevClose) return;
+  try {
+    const to = istDateString(Date.now() - 86_400_000);
+    const from = istDateString(Date.now() - 14 * 86_400_000);
+    const candles = await getDailyCandles(NIFTY_KEY, from, to);
+    const last = candles.filter((c) => String(c.time).slice(0, 10) < today).at(-1);
+    if (last) {
+      state.nifty.prevClose = last.close;
+      state.nifty.prevCloseDate = String(last.time).slice(0, 10);
+      logger.info(`Nifty previous close ${last.close} (${state.nifty.prevCloseDate})`);
+    }
+  } catch (e) {
+    logger.warn(`could not read Nifty's previous close: ${e.message}`);
+  }
+}
+
+/** Nifty for the header: both moves, live off the latest tick. */
+function niftySnapshot() {
+  // TODAY's bars only: the store also holds days of seeded history, whose first
+  // bar would otherwise be mistaken for this morning's open.
+  const bars = sessionBars(state.indexStore.bars(NIFTY_KEY) ?? [], Date.now());
+  const open = bars.length ? bars[0].open : state.nifty.open;
+  state.nifty.open = open ?? null;
+  const ltp = state.nifty.ltp ?? (bars.length ? bars.at(-1).close : null);
+  const move = (from) => (from > 0 && ltp > 0 ? ((ltp - from) / from) * 100 : null);
+  return {
+    key: NIFTY_KEY,
+    ltp,
+    open: open ?? null,
+    prevClose: state.nifty.prevClose,
+    prevCloseDate: state.nifty.prevCloseDate,
+    pctFromOpen: move(open),
+    pctFromPrevClose: move(state.nifty.prevClose),
+  };
 }
 
 function onSessionEnd() {
@@ -765,7 +816,10 @@ export function getSnapshot() {
     revision: state.revision,
     capitalPerStrategy: CAPITAL_PER_STRATEGY,
     // Today's day type so far (trend-up / trend-down / flat / unclear / early).
+    // Decided on CLOSED 3m bars, so it never flickers; the live Nifty numbers
+    // below are separate and move with every tick.
     dayType: state.dayTrend ?? null,
+    nifty: niftySnapshot(),
     running: state.started,
     marketOpen: isMarketOpen(),
     hasToken: HAS_TOKEN,

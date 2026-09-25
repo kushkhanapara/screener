@@ -34,6 +34,11 @@ export type ScripMatch = {
   underlying: string
   cashKey: string
   cashLtp: number | null
+  /** Reference prices, so the browser can compute the move on every tick. */
+  prevClose?: number | null
+  dayOpen?: number | null
+  dayHigh?: number | null
+  dayLow?: number | null
   trend: Trend
   longMatch: boolean
   shortMatch: boolean
@@ -331,6 +336,16 @@ export type PaperSnapshot = {
   revision: number
   capitalPerStrategy?: number
   dayType?: DayTypeState | null
+  /** Nifty for the header: the live price and both ways of reading its move. */
+  nifty?: {
+    key: string
+    ltp: number | null
+    open: number | null
+    prevClose: number | null
+    prevCloseDate: string | null
+    pctFromOpen: number | null
+    pctFromPrevClose: number | null
+  } | null
   running: boolean
   marketOpen: boolean
   hasToken: boolean

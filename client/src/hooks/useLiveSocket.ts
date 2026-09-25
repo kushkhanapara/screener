@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { liveSocketUrl, type ScripMatch, type PaperSnapshot } from "@/lib/api"
 import type { PriceMap } from "@/lib/prices"
+import { applyPriceFrame } from "@/lib/priceStore"
 
 export type LiveSocketState = {
   connected: boolean
@@ -83,6 +84,9 @@ export function useLiveSocket(): LiveSocketState {
         try {
           const msg = JSON.parse(ev.data)
           if (msg.type === "prices") {
+            // Straight into the price store: components subscribed to one
+            // instrument update on this frame, without re-rendering the app.
+            applyPriceFrame(msg.ltp ?? {}, Boolean(msg.full))
             if (msg.full) pricesRef.current = {}
             Object.assign(pricesRef.current, msg.ltp ?? {})
             pricesDirty.current = true
