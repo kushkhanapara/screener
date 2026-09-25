@@ -41,9 +41,14 @@ export function StatusBar({
 
   // A feed that cannot recover must not keep saying "connecting…" — that reads
   // as progress when nothing is happening.
+  const stale = live?.stale
   const liveLabel = fatal
     ? "needs attention"
-    : connected
+    : stale
+      ? "stalled — prices frozen, reconnecting"
+      : live?.repairing
+        ? "checking bars against Upstox — no new trades for a few minutes"
+        : connected
       ? "connected"
       : marketOpen
         ? "connecting…"
@@ -63,11 +68,12 @@ export function StatusBar({
         </span>
         <span className="text-border">·</span>
         <span className="inline-flex items-center gap-1.5">
-          <Dot tone={fatal ? "err" : connected ? "on" : marketOpen ? "warn" : "off"} />
+          <Dot tone={fatal || stale ? "err" : connected ? "on" : marketOpen ? "warn" : "off"} />
           Live prices <span className="text-foreground/80">{liveLabel === "offline" ? "off (market closed)" : liveLabel}</span>
         </span>
       </div>
       {fatal && <p className="text-[12px] text-down">{fatal}</p>}
+      {!fatal && stale && live?.error && <p className="text-[12px] text-down">{live.error} — no new paper trades until data returns.</p>}
     </div>
   )
 }

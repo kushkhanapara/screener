@@ -147,3 +147,108 @@ test("seeded bars then accept live ticks on the following bucket", () => {
   assert.equal(s.bars("K").length, 2);
   assert.equal(s.closedBars("K", T0 + 2 * BUCKET).length, 2);
 });
+
+test("seed keeps bars the live feed built before seeding finished", () => {
+  const s = mk();
+  const t0 = 1_000 * BUCKET;
+  // The feed opened first: ticks in the bar that was forming, and in the next.
+  s.addTick("K", 101, t0 + 10, 5);
+  s.addTick("K", 104, t0 + 20, 5);
+  s.addTick("K", 103, t0 + BUCKET + 1, 7);
+  // Seed returns history up to and including the forming bar (partial).
+  s.seed("K", [
+    { time: new Date(t0 - BUCKET).toISOString(), open: 98, high: 99, low: 97, close: 98.5, volume: 50 },
+    { time: new Date(t0).toISOString(), open: 100, high: 102, low: 99, close: 101, volume: 40 },
+  ]);
+  const bars = s.bars("K");
+  assert.equal(bars.length, 3, "history, the shared bar and the newer live bar");
+  assert.deepEqual(bars[0], { time: t0 - BUCKET, open: 98, high: 99, low: 97, close: 98.5, volume: 50 });
+  assert.deepEqual(bars[1], { time: t0, open: 100, high: 104, low: 99, close: 104, volume: 40 });
+  assert.equal(bars[2].time, t0 + BUCKET);
+  assert.equal(bars[2].close, 103);
+  // And ticks keep extending the newest bar afterwards.
+  s.addTick("K", 105, t0 + BUCKET + 2, 1);
+  assert.equal(s.bars("K").at(-1).close, 105);
+});
+
+test("seed with nothing live behaves exactly as before", () => {
+  const s = mk();
+  s.seed("K", [{ time: new Date(0).toISOString(), open: 1, high: 2, low: 0.5, close: 1.5, volume: 3 }]);
+  assert.deepEqual(s.bars("K"), [{ time: 0, open: 1, high: 2, low: 0.5, close: 1.5, volume: 3 }]);
+});
+
+test("reconcile replaces closed bars with authoritative candles and fills gaps", () => {
+  const s = mk();
+  const t0 = 1_000 * BUCKET;
+  // Feed froze mid-bar at t0, then missed t0+BUCKET entirely; t0+2B is forming.
+  s.addTick("K", 100, t0 + 1, 10);
+  s.addTick("K", 100.5, t0 + 2, 10);
+  s.addTick("K", 102, t0 + 2 * BUCKET + 1, 5);
+  const now = t0 + 2 * BUCKET + 30_000;
+  const n = s.reconcile(
+    "K",
+    [
+      { time: new Date(t0).toISOString(), open: 100, high: 101.5, low: 99.8, close: 101.2, volume: 900 },
+      { time: new Date(t0 + BUCKET).toISOString(), open: 101.2, high: 102, low: 101, close: 101.9, volume: 700 },
+      // The forming bar from REST is partial: it must not replace the live one.
+      { time: new Date(t0 + 2 * BUCKET).toISOString(), open: 101.9, high: 101.95, low: 101.9, close: 101.95, volume: 1 },
+    ],
+    now
+  );
+  assert.equal(n, 2);
+  const bars = s.bars("K");
+  assert.equal(bars.length, 3);
+  assert.deepEqual(bars[0], { time: t0, open: 100, high: 101.5, low: 99.8, close: 101.2, volume: 900 });
+  assert.equal(bars[1].close, 101.9);
+  assert.equal(bars[2].close, 102, "forming bar stays live");
+  s.addTick("K", 102.5, t0 + 2 * BUCKET + 5, 1);
+  assert.equal(s.bars("K").at(-1).close, 102.5);
+});
+
+test("exchange minute candles replace snapshot-built minutes, fixing boundary slide", () => {
+  const s = mk();
+  const t0 = 1_000 * BUCKET; // bar A = [t0, t0+3m), bar B = [t0+3m, t0+6m)
+  // Last minute of A: the snapshots saw 100.
+  s.addTick("K", 100, t0 + 2 * MIN + 10_000, 50);
+  // A snapshot just after the boundary carries trades from before it: it lands
+  // in B with their volume (400).
+  s.addTick("K", 103, t0 + BUCKET + 500, 400);
+  let [a, b] = s.bars("K");
+  assert.equal(a.close, 100);
+  assert.equal(b.volume, 400);
+  // The exchange candles for A's last minute and B's first minute arrive.
+  s.applyMinute("K", t0 + 2 * MIN, { open: 100, high: 102.5, low: 99.9, close: 102.4, volume: 380 });
+  s.applyMinute("K", t0 + BUCKET, { open: 102.6, high: 103, low: 102.5, close: 103, volume: 70 });
+  [a, b] = s.bars("K");
+  assert.equal(a.close, 102.4, "A closes where the exchange says");
+  assert.equal(a.high, 102.5);
+  assert.equal(a.volume, 380);
+  assert.equal(b.open, 102.6, "B opens on its own first trade");
+  assert.equal(b.volume, 70, "volume no longer slides into B");
+  // A late snapshot inside a minute the exchange has closed changes nothing.
+  s.addTick("K", 150, t0 + BUCKET + 30_000, 999);
+  assert.equal(s.bars("K").at(-1).high, 103);
+});
+
+test("a bar is the aggregate of its minutes", () => {
+  const s = mk();
+  const t0 = 1_000 * BUCKET;
+  s.applyMinute("K", t0, { open: 10, high: 11, low: 9.5, close: 10.5, volume: 100 });
+  s.applyMinute("K", t0 + MIN, { open: 10.5, high: 12, low: 10.4, close: 11.8, volume: 200 });
+  s.addTick("K", 11.6, t0 + 2 * MIN + 1_000, 30); // forming third minute
+  assert.deepEqual(s.bars("K"), [{ time: t0, open: 10, high: 12, low: 9.5, close: 11.6, volume: 330 }]);
+});
+
+test("reconciled bars are locked against later minute updates", () => {
+  const s = mk();
+  const t0 = 1_000 * BUCKET;
+  s.addTick("K", 10, t0 + 1_000, 5);
+  s.addTick("K", 10.2, t0 + BUCKET + 1_000, 5); // A has closed
+  s.reconcile(
+    "K",
+    [{ time: new Date(t0).toISOString(), open: 10, high: 10.4, low: 9.9, close: 10.1, volume: 999 }],
+    t0 + BUCKET + 2_000
+  );
+  s.applyMinute("K", t0 + 2 * MIN, { open: 1, high: 1, low: 1, close: 1, volume: 1 });
+  assert.deepEqual(s.bars("K")[0], { time: t0, open: 10, high: 10.4, low: 9.9, close: 10.1, volume: 999 });
+});

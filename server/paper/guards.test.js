@@ -208,7 +208,9 @@ test("a normal exit keeps its real timestamp", () => {
 test("every registered strategy stops taking new trades at 15:00 IST", async () => {
   const { list } = await import("../strategies/index.js");
   for (const s of list()) {
-    assert.equal(entriesAllowed(s, ist(14, 59)), true, `${s.id} should still trade at 14:59`);
+    // A strategy may stop earlier on its own (VWAP + Volume Profile: 14:30).
+    const last = Math.min(s.exits.noEntryAfterMin ?? 15 * 60, 15 * 60) - 1;
+    assert.equal(entriesAllowed(s, ist(Math.floor(last / 60), last % 60)), true, `${s.id} should still trade a minute before its cutoff`);
     assert.equal(entriesAllowed(s, ist(15, 0)), false, `${s.id} must not open at 15:00`);
     assert.equal(entriesAllowed(s, ist(15, 10)), false, `${s.id} must not open after 15:00`);
   }

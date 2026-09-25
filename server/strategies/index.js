@@ -1,6 +1,7 @@
 import trendMomentum from "./trendMomentum.js";
 import vwapRelativeStrength from "./vwapRelativeStrength.js";
 import momentumSurge from "./momentumSurge.js";
+import vwapVolumeProfile from "./vwapvp/strategy.js";
 import { selective } from "./selective.js";
 import { DAY_TYPES } from "../paper/dayType.js";
 
@@ -17,7 +18,9 @@ const ORIGINALS = [momentumSurge, trendMomentum, vwapRelativeStrength];
 // Only the original strategies trade live. The Selective versions (see
 // selective.js) were removed on 16 Sept after losing more than the originals in
 // their first live session; they remain available to the replay for research.
-const REGISTRY = new Map(ORIGINALS.map((s) => [s.id, s]));
+// VWAP + Volume Profile trades live on paper too, with its own exit engine
+// (vwapvp/engine.js). It has no Selective twin, so it is not in ORIGINALS.
+const REGISTRY = new Map([...ORIGINALS, vwapVolumeProfile].map((s) => [s.id, s]));
 
 /** Selective versions, for the replay only — never registered for live trading. */
 export function selectiveVariants() {

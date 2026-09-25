@@ -12,8 +12,9 @@ import { markToMarket } from "@/lib/prices"
 
 /** How far price has travelled from entry toward the stop, as a 0–1 fraction. */
 function riskUsed(p: PaperPosition) {
-  if (p.ltp == null || !p.riskPerUnit) return null
-  const adverse = p.side === "long" ? p.entryPrice - p.ltp : p.ltp - p.entryPrice
+  const price = p.markPrice ?? p.ltp
+  if (price == null || !p.riskPerUnit) return null
+  const adverse = p.side === "long" ? p.entryPrice - price : price - p.entryPrice
   return Math.max(0, Math.min(1, adverse / p.riskPerUnit))
 }
 
@@ -51,8 +52,12 @@ export function PositionsTable({ positions: incoming, targetR }: { positions: Pa
 
   const totalR = positions.reduce((a, p) => a + (p.unrealisedR ?? 0), 0)
   const totalPnl = positions.reduce((a, p) => a + (p.unrealisedPnl ?? 0), 0)
-  const targetOf = (p: PaperPosition) =>
-    targetR ? p.entryPrice + (p.side === "long" ? 1 : -1) * targetR * p.riskPerUnit : null
+  const targetOf = (p: PaperPosition) => {
+    // A strategy that sets its own target (VWAP + Volume Profile) carries it;
+    // a trend trade there has none and runs on the trailing stop.
+    if (p.features?.vpLevels) return p.features.vpLevels.targetPrice ?? null
+    return targetR ? p.entryPrice + (p.side === "long" ? 1 : -1) * targetR * p.riskPerUnit : null
+  }
 
   return (
     <div className="space-y-2">
@@ -69,7 +74,7 @@ export function PositionsTable({ positions: incoming, targetR }: { positions: Pa
             <TableRow className="hover:bg-transparent">
               <Th tip={TERMS.lot}>Stock</Th>
               <Th tip={TERMS.buySell}>Direction</Th>
-              <Th right>Entry price</Th>
+              <Th right>Entry (futures)</Th>
               <Th right tip={TERMS.priceNow}>Price now</Th>
               <Th right tip={TERMS.stop}>Stop loss</Th>
               <Th right tip={TERMS.target}>Target</Th>
@@ -87,6 +92,11 @@ export function PositionsTable({ positions: incoming, targetR }: { positions: Pa
                 <TableRow key={p.id} className="hover:bg-transparent">
                   <TableCell className="font-mono text-[13px] font-medium">
                     <span title={p.futLabel ?? undefined}>{p.underlying}</span>
+                    {p.futLabel && (
+                      <div className="text-muted-foreground text-[11px] font-normal" title="Always the nearest expiry">
+                        {p.futLabel.replace(`${p.underlying} `, "")} · near month
+                      </div>
+                    )}
                     <div className="text-muted-foreground text-[11px] font-normal">
                       {p.lots} lot · {p.qty} shares
                     </div>
@@ -96,8 +106,25 @@ export function PositionsTable({ positions: incoming, targetR }: { positions: Pa
                       {sideWord(p.side)}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right font-mono text-[13px] tabular-nums">{num(p.entryPrice)}</TableCell>
-                  <TableCell className="text-right font-mono text-[13px] tabular-nums">{num(p.ltp)}</TableCell>
+                  <TableCell className="text-right font-mono text-[13px] tabular-nums">
+                    {num(p.entryPrice)}
+                    {p.cashPriceAtSignal != null && (
+                      <div className="text-muted-foreground text-[11px]" title="Cash (spot) price when the signal fired">
+                        spot {num(p.cashPriceAtSignal)}
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right font-mono text-[13px] tabular-nums">
+                    {num(p.markPrice ?? p.ltp)}
+                    {p.markSource && p.markSource !== "last" && (
+                      <div
+                        className="text-muted-foreground text-[11px]"
+                        title={`Best ${p.markSource} — what this trade could exit at now. Last trade ${num(p.ltp)}.`}
+                      >
+                        {p.markSource} · last {num(p.ltp)}
+                      </div>
+                    )}
+                  </TableCell>
                   <TableCell className="text-right font-mono text-[13px] tabular-nums">
                     <span className="inline-flex items-center gap-1">
                       {p.breakevenMoved && <Shield className="text-up size-3" aria-label="stop moved to entry or better" />}

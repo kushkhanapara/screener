@@ -45,6 +45,36 @@
         "PORT": "8080"
       },
       "port": 8080
+    },
+    {
+      "name": "screener-api-alt",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--watch",
+        "server/index.js"
+      ],
+      "env": {
+        "PORT": "8081"
+      },
+      "port": 8081
+    },
+    {
+      "name": "screener-client-alt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "client",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5175",
+        "--strictPort"
+      ],
+      "env": {
+        "API_TARGET": "http://localhost:8081"
+      },
+      "port": 5175
     }
   ]
 }

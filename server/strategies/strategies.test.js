@@ -8,11 +8,12 @@ import { buildContext, atrPct, runChecks } from "./context.js";
 // ── Registry ───────────────────────────────────────────────────────────
 
 test("registry exposes every strategy with unique ids", () => {
-  assert.equal(list().length, 3);
-  assert.equal(new Set(ids()).size, 3);
+  assert.equal(list().length, 4);
+  assert.equal(new Set(ids()).size, 4);
   assert.equal(get("trend-momentum"), trendMomentum);
   assert.equal(get("vwap-relative-strength"), vwapRs);
   assert.equal(get("momentum-surge")?.id, "momentum-surge");
+  assert.equal(get("vwap-volume-profile")?.id, "vwap-volume-profile");
   assert.equal(get("nope"), undefined);
 });
 
@@ -37,18 +38,22 @@ test("the strategies use different exit parameters", () => {
   assert.equal(new Set(seen).size, seen.length, "each strategy tunes its own exits");
 });
 
+// The originals, on the shared engine. VWAP + Volume Profile brings its own
+// engine and runs on any day type (its rotation setup is for flat days).
+const originals = () => list().filter((s) => !s.engine);
+
 test("live trading runs the originals only, on the 15 Sept exit rules", () => {
   for (const s of list()) {
     assert.equal(s.selection, undefined, `${s.id} must not be a Selective variant`);
     assert.equal(s.exits.proveItBars, undefined, `${s.id}: no early "no follow-through" exit`);
     assert.ok(s.exits.timeStopBars >= 1000, `${s.id}: no time stop`);
-    assert.deepEqual(s.dayTypes, ["trend"], `${s.id}: trades on trend days only`);
   }
+  assert.equal(originals().length, 3);
+  for (const s of originals()) assert.deepEqual(s.dayTypes, ["trend"], `${s.id}: trades on trend days only`);
 });
 
 test("Selective variants stay available to the replay with the same signal and exits", () => {
-  const originals = list();
-  for (const o of originals) {
+  for (const o of originals()) {
     const twin = selectiveVariants().find((s) => s.id === `${o.id}-selective`);
     assert.ok(twin, `${o.id} has a Selective version`);
     assert.equal(twin.evaluate, o.evaluate, "same signal");

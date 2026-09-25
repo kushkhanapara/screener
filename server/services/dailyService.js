@@ -1,5 +1,5 @@
 import { getDailyCandles, getLtp } from "../data/upstox.js";
-import { loadFuturesUniverse, getUnderlyings, getUniverse } from "../data/instruments.js";
+import { ensureFreshUniverse, getUnderlyings, getUniverse } from "../data/instruments.js";
 import { buildRows } from "../core/rows.js";
 import { rsi, macdEma, atr } from "../core/indicators.js";
 import { evaluate } from "../core/strategy.js";
@@ -146,7 +146,7 @@ export async function refresh() {
   state.error = null;
 
   try {
-    if (!getUnderlyings()) await loadFuturesUniverse();
+    await ensureFreshUniverse();
     const underlyings = getUnderlyings();
     state.total = underlyings.length;
 

@@ -10,6 +10,11 @@ const { MarketDataStreamerV3, ApiClient } = pkg;
  * the free tier). The SDK handles the protobuf decode + the wss redirect;
  * ping/pong is automatic. We surface a simple onTick(key, ltp, tsMs, qty) plus
  * connection-state callbacks.
+ *
+ * Keys passed as `fullKeys` (the futures) are subscribed in "full" mode as well,
+ * which adds the best bid and ask — surfaced as onQuote(key, bid, ask, tsMs).
+ * Quotes change far more often than trades, so an open position can be marked
+ * at the price it could actually exit at between trades.
  */
 /**
  * Work around a crash in upstox-js-sdk.
@@ -34,8 +39,21 @@ function patchSdkCleanupBug(streamer) {
 }
 
 export class UpstoxFeed {
-  constructor({ onTick, onState } = {}) {
+  constructor({ onTick, onQuote, onState } = {}) {
     this.onTick = onTick || (() => {});
+    this.onQuote = onQuote || (() => {});
+    // Full-mode keys: the last trade each message repeated, so a quote-only
+    // update is not replayed as a fresh trade (it would double-count volume).
+    this.lastTrade = new Map();
+    // Full-mode keys: cumulative volume traded today, per key. Bar volume is
+    // its increase. Summing each snapshot's last-trade quantity instead counted
+    // about a tenth of the real volume (measured 25 Sept 2026), because the feed
+    // sends snapshots, not every trade.
+    this.lastVtt = new Map();
+    this.lastLtp = new Map();
+    this.lastRange = new Map();
+    // Diagnostics: the last few raw OHLC blocks per key (see liveService.debugFeed).
+    this.rawOhlc = new Map();
     this.onState = onState || (() => {});
     this.streamer = null;
     this.connected = false;
@@ -55,8 +73,40 @@ export class UpstoxFeed {
     );
   }
 
-  connect(instrumentKeys) {
+  /**
+   * The exchange's candle for the last COMPLETED minute ("I1"), or null.
+   * Observed 25 Sept 2026: at 12:37:xx it carries the 12:36 minute, with that
+   * minute's final open/high/low/close and volume.
+   */
+  static #lastMinute(feed) {
+    const list = feed?.fullFeed?.marketFF?.marketOHLC?.ohlc ?? feed?.fullFeed?.indexFF?.marketOHLC?.ohlc;
+    const c = Array.isArray(list) ? list.find((o) => o?.interval === "I1") : null;
+    if (!c) return null;
+    const m = {
+      ts: Number(c.ts),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+      volume: Number(c.vol) || 0,
+    };
+    return Number.isFinite(m.ts) && m.open > 0 && m.high > 0 && m.low > 0 && m.close > 0 ? m : null;
+  }
+
+  /** Best bid/ask from a decoded full feed, or null. */
+  static #quote(feed) {
+    const q = feed?.fullFeed?.marketFF?.marketLevel?.bidAskQuote?.[0];
+    if (!q) return null;
+    const bid = Number(q.bidP);
+    const ask = Number(q.askP);
+    return { bid: bid > 0 ? bid : null, ask: ask > 0 ? ask : null };
+  }
+
+  connect(instrumentKeys, { fullKeys = [] } = {}) {
     if (this.streamer) return;
+    const full = new Set(fullKeys);
+    const ltpcKeys = instrumentKeys.filter((k) => !full.has(k));
+    instrumentKeys = ltpcKeys;
     // Authorize the SDK's shared ApiClient with the Analytics Token.
     ApiClient.instance.authentications.OAUTH2.accessToken = UPSTOX_TOKEN;
 
@@ -75,6 +125,13 @@ export class UpstoxFeed {
       } catch {
         /* already subscribed via constructor */
       }
+      if (full.size) {
+        try {
+          streamer.subscribe([...full], "full");
+        } catch (e) {
+          this.onState({ connected: true, event: "error", error: `full-mode subscribe failed: ${e.message}` });
+        }
+      }
       this.onState({ connected: true, event: "open" });
     });
 
@@ -83,12 +140,50 @@ export class UpstoxFeed {
       if (!msg?.feeds) return;
       const topTs = Number(msg.currentTs) || Date.now();
       for (const [key, feed] of Object.entries(msg.feeds)) {
+        if (full.has(key)) {
+          const q = UpstoxFeed.#quote(feed);
+          if (q && (q.bid != null || q.ask != null)) this.onQuote(key, q.bid, q.ask, topTs);
+        }
         const ltpc = UpstoxFeed.#ltpc(feed);
         if (!ltpc) continue;
         const ltp = Number(ltpc.ltp);
         if (!Number.isFinite(ltp)) continue;
         const ts = Number(ltpc.ltt) || topTs;
-        this.onTick(key, ltp, ts, Number(ltpc.ltq) || 0);
+        let qty = Number(ltpc.ltq) || 0;
+        let minute = null;
+        if (full.has(key)) {
+          minute = UpstoxFeed.#lastMinute(feed);
+          const raw = feed?.fullFeed?.marketFF?.marketOHLC?.ohlc;
+          if (raw) {
+            const hist = this.rawOhlc.get(key) ?? [];
+            hist.push({ at: Date.now(), ltt: ts, ltp, vtt: feed.fullFeed.marketFF.vtt, ohlc: raw });
+            if (hist.length > 40) hist.shift();
+            this.rawOhlc.set(key, hist);
+          }
+          // Pass the completed minute on only when it is new or revised.
+          const minuteSig = minute ? `${minute.ts}:${minute.open}:${minute.high}:${minute.low}:${minute.close}:${minute.volume}` : null;
+          const minuteNew = minuteSig !== this.lastRange.get(key);
+          this.lastRange.set(key, minuteSig);
+          if (!minuteNew) minute = null;
+          const vtt = Number(feed?.fullFeed?.marketFF?.vtt);
+          if (Number.isFinite(vtt) && vtt > 0) {
+            const prev = this.lastVtt.get(key);
+            this.lastVtt.set(key, vtt);
+            // First snapshot sets the baseline: its volume is already in the
+            // seeded bars. A drop means a new day's counter; count nothing.
+            const delta = prev == null || vtt < prev ? 0 : vtt - prev;
+            const moved = this.lastLtp.get(key) !== ltp;
+            this.lastLtp.set(key, ltp);
+            if (delta === 0 && !moved && !minute) continue; // quote-only update
+            qty = delta;
+          } else {
+            const sig = `${ts}:${ltp}:${qty}`;
+            if (this.lastTrade.get(key) === sig && !minute) continue; // quote moved, no new trade
+            if (this.lastTrade.get(key) === sig) qty = 0;
+            this.lastTrade.set(key, sig);
+          }
+        }
+        this.onTick(key, ltp, ts, qty, minute);
       }
     });
 

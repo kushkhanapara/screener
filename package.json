@@ -23,6 +23,7 @@
     "download:year": "node server/scripts/replay.js --year --download-only",
     "replay:year": "node --max-old-space-size=6144 server/scripts/replay.js --year --stop-at=08:00",
     "replay:research": "node --max-old-space-size=6144 server/scripts/replay.js --year --research --stop-at=08:00",
+    "replay:vwapvp": "node --max-old-space-size=6144 server/scripts/replay.js --year --vwapvp --stop-at=08:00",
     "replay:swing": "node server/scripts/swingReplay.js",
     "verify:universe": "node server/scripts/verifyUniverse.js"
   },

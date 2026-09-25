@@ -17,6 +17,8 @@
  *                                   or --download-only to fetch the history and exit.
  *   npm run replay -- --year --research    the research strategies (strategies/research.js)
  *                                   over the same 12 months, judged the same way
+ *   npm run replay -- --vwapvp      VWAP + Volume Profile (strategies/vwapvp/, still being
+ *                                   learned) beside VWAP Snap-back. Add --year for 12 months.
  *   npm run replay -- --daytype --tf15     momentum strategies on 15-minute bars vs
  *                                   3-minute bars (both trend days only)
  *   npm run replay -- --daytype --orfade   same split test for Opening Range Fade
@@ -47,6 +49,7 @@ import { dayTrend, trendDayVeto, dayTypeVeto, classifyDay, DAY_TYPE } from "../p
 import { vwapSnapback } from "../strategies/vwapSnapback.js";
 import { openingRangeFade } from "../strategies/openingRangeFade.js";
 import { RESEARCH_BOOKS } from "../strategies/research.js";
+import { VWAP_VP_BOOKS } from "../strategies/vwapvp/books.js";
 import { dailyStatsFrom } from "../services/dailyService.js";
 import { list as listStrategies, familyOf, selectiveVariants } from "../strategies/index.js";
 import { buildContext, regimeAllows } from "../strategies/context.js";
@@ -95,6 +98,7 @@ const orFadeMode = process.argv.includes("--orfade");
 const tf15Mode = process.argv.includes("--tf15");
 const yearMode = process.argv.includes("--year");
 const researchMode = process.argv.includes("--research");
+const vwapVpMode = process.argv.includes("--vwapvp");
 const YEAR_FROM = "2025-09-17";
 const UNTOUCHED_LAST_DAY = "2026-01-31"; // no rule was ever tuned on these months
 const STOP_AT = process.argv.find((a) => a.startsWith("--stop-at="))?.slice(10) ?? null; // "HH:MM" IST
@@ -439,7 +443,9 @@ async function main() {
 
   const originals = listStrategies();
   const selectives = selectiveVariants();
-  const strategies = yearMode && researchMode
+  const strategies = vwapVpMode
+    ? [...VWAP_VP_BOOKS]
+    : yearMode && researchMode
     ? [...RESEARCH_BOOKS]
     : yearMode
     ? [
@@ -529,7 +535,7 @@ async function main() {
           const bars = series.get(p.underlying)?.b3;
           const i = bars ? lastIndexAtOrBefore(bars, b) : -1;
           if (i < 0 || bars[i].time !== b) continue;
-          const { exit, position } = engine.applyBar(p, s, bars[i], T);
+          const { exit, position } = (s.engine ?? engine).applyBar(p, s, bars[i], T);
           if (exit) close(s, position, exit.price, exit.reason, T);
           else positions.get(s.id).set(p.underlying, position);
         }
@@ -640,7 +646,7 @@ async function main() {
         });
         if (!afford.ok) continue;
 
-        const position = engine.openPosition({
+        const position = (strategy.engine ?? engine).openPosition({
           runId,
           strategy,
           signal,
@@ -675,7 +681,8 @@ async function main() {
 
   store.finishRun(runId);
   store.close();
-  if (yearMode) reportYear(results, replayed, originals, dayTypeLog, stoppedEarly);
+  if (vwapVpMode) reportVwapVp(results, replayed, stoppedEarly);
+  else if (yearMode) reportYear(results, replayed, originals, dayTypeLog, stoppedEarly);
   else if (dayTypeMode) reportDayType(results, days, originals, dayTypeLog);
   else report(results, days, originals);
   console.log(`\nwritten to ${dbPath} as run ${runId}`);
@@ -856,6 +863,56 @@ function reportTf15(results, days, originals, tuneDays, testDays, inDays) {
 }
 
 let dayTypeLogRef = new Map();
+
+/** --vwapvp: each book on its own, by month, and (for --year) on the untouched months. */
+function reportVwapVp(results, days, partial) {
+  const books = VWAP_VP_BOOKS;
+  const of = (b, ts = results) => ts.filter((t) => t.strategyId === b.id);
+  console.log(`\nVWAP + VOLUME PROFILE vs VWAP SNAP-BACK${partial ? " — PARTIAL (stopped early)" : ""}: ${days[0]} → ${days[days.length - 1]}, ${days.length} sessions`);
+  console.log("Fills at the next 3-minute cash open; flat 0.065% charges; stops and targets checked on bar ranges.");
+
+  console.log("\nALL REPLAYED DAYS");
+  for (const b of books) console.log(line(b.name, of(b), days.length));
+
+  if (yearMode) {
+    for (const [label, ds] of [
+      ["UNTOUCHED MONTHS (no rule tuned on them) — the honest test", days.filter((d) => d <= UNTOUCHED_LAST_DAY)],
+      ["LATER MONTHS", days.filter((d) => d > UNTOUCHED_LAST_DAY)],
+    ]) {
+      if (!ds.length) continue;
+      console.log(`\n${label}`);
+      for (const b of books) console.log(line(b.name, of(b).filter((t) => ds.includes(t.day)), ds.length));
+    }
+  }
+
+  const months = [...new Set(days.map((d) => d.slice(0, 7)))];
+  if (months.length > 1) {
+    console.log("\nBY MONTH — total R (trades)");
+    console.log(`  ${"month".padEnd(9)}${books.map((b) => b.name.slice(0, 24).padStart(28)).join("")}`);
+    for (const m of months) {
+      const ts = results.filter((t) => t.day.startsWith(m));
+      console.log(`  ${m.padEnd(9)}${books.map((b) => { const x = of(b, ts); return `${R(x.reduce((a, t) => a + t.rMultiple, 0))} (${x.length})`.padStart(28); }).join("")}`);
+    }
+  }
+
+  console.log("\nHOW TRADES ENDED");
+  for (const b of books) {
+    const ts = of(b);
+    const exits = {};
+    for (const t of ts) exits[t.exitReason] = (exits[t.exitReason] || 0) + 1;
+    const chargeR = ts.length ? ts.reduce((a, t) => a + t.costs / t.rupeeRisk, 0) / ts.length : 0;
+    console.log(`  ${b.name.padEnd(30)} charges ${chargeR.toFixed(2)}R/trade · ${Object.entries(exits).map(([k, v]) => `${k} ${v}`).join(", ") || "no trades"}`);
+  }
+
+  if (days.length <= 31) {
+    console.log("\nPER DAY — total R (trades)");
+    console.log(`  ${"day".padEnd(12)}${books.map((b) => b.name.slice(0, 24).padStart(28)).join("")}`);
+    for (const day of days) {
+      const d = results.filter((t) => t.day === day);
+      console.log(`  ${day.padEnd(12)}${books.map((b) => { const x = of(b, d); return `${R(x.reduce((a, t) => a + t.rMultiple, 0))} (${x.length})`.padStart(28); }).join("")}`);
+    }
+  }
+}
 
 function report(results, days, originals) {
   const tagOf = (id) => (id.includes("@") ? id.split("@")[1] : id.endsWith("-selective") ? "selective" : "original");

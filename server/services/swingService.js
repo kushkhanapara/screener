@@ -27,7 +27,7 @@ import * as engine from "../paper/engine.js";
 import { compute } from "../paper/metrics.js";
 import { canAfford, deployedCapital, capitalState } from "../paper/capital.js";
 import { calibrateContract } from "../paper/charges.js";
-import { getUniverse, getUnderlyings, loadFuturesUniverse } from "../data/instruments.js";
+import { getUniverse, getUnderlyings, ensureFreshUniverse } from "../data/instruments.js";
 import { getDailyCandles, getLtp } from "../data/upstox.js";
 import { indicators, dailySignal } from "../swing/dailyStrategies.js";
 import { atrAt, dateOf } from "../swing/dipRecovery.js";
@@ -135,7 +135,7 @@ async function morningSync(now) {
   state.building = true;
   state.error = null;
   try {
-    if (!getUnderlyings()) await loadFuturesUniverse();
+    await ensureFreshUniverse();
     const underlyings = getUnderlyings() || [];
     const nifty = await dailyCandles(NIFTY_KEY, now);
     if (nifty.length < 60) throw new Error("no Nifty daily history");
