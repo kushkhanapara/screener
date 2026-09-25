@@ -1,13 +1,12 @@
 import { Badge } from "@/components/ui/badge"
 import type { FuturePrice } from "@/lib/api"
-import { livePrice, usePrices } from "@/lib/prices"
+import { LivePrice } from "@/components/ui/live-price"
 
 const fmt = (v: number | null | undefined, d = 2) =>
   v != null && Number.isFinite(v) ? v.toFixed(d) : "—"
 
 /** Compact per-expiry futures price chips, e.g. `JUL 3012.5 · AUG 3025`. */
 export function FuturesChips({ futures }: { futures?: FuturePrice[] }) {
-  const prices = usePrices()
   if (!futures?.length) return <span className="text-muted-foreground text-xs">—</span>
   return (
     <div className="flex flex-wrap gap-1">
@@ -19,7 +18,7 @@ export function FuturesChips({ futures }: { futures?: FuturePrice[] }) {
           title={f.label}
         >
           <span className="text-muted-foreground mr-1 font-sans">{f.month}</span>
-          {fmt(livePrice(prices, f.key, f.ltp))}
+          <LivePrice instrument={f.key} fallback={f.ltp} />
         </Badge>
       ))}
     </div>

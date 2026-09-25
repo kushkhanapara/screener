@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils"
 import { FuturesChips } from "@/components/FuturesChips"
 import { RsiMomentum } from "@/components/RsiMomentum"
 import type { ScripMatch, Side, TfState, Timeframe } from "@/lib/api"
-import { livePrice, usePrices } from "@/lib/prices"
+import { LiveChange, LivePrice } from "@/components/ui/live-price"
 
 const fmt = (v: number | null | undefined, d = 2) =>
   v != null && Number.isFinite(v) ? v.toFixed(d) : "—"
@@ -68,7 +68,6 @@ type Props = {
 
 /** Live matches for one side (Long/Short), sorted with both-timeframe hits first. */
 export function LiveResultsTable({ scrips, side, enteredSet, emptyHint }: Props) {
-  const prices = usePrices()
   const rows = (scrips ?? [])
     .filter((s) => (side === "long" ? s.longMatch : s.shortMatch))
     .sort((a, b) => {
@@ -93,7 +92,8 @@ export function LiveResultsTable({ scrips, side, enteredSet, emptyHint }: Props)
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             <TableHead>Stock</TableHead>
-            <TableHead className="text-right" title="Last traded price">Price now</TableHead>
+            <TableHead className="text-right" title="Last traded price, live on every tick">Price now</TableHead>
+            <TableHead className="text-right" title="Move since yesterday's close, live on every tick">Change</TableHead>
             <TableHead className="text-right" title="Momentum, 0–100. Above 60 strong buying, below 40 strong selling. Arrow: above/below its signal line.">Momentum (RSI)</TableHead>
             <TableHead className="text-right" title="Trend push. Positive = upward push, negative = downward.">Trend push (MACD)</TableHead>
             <TableHead title="Overall direction on the 15-minute chart">Trend</TableHead>
@@ -120,8 +120,11 @@ export function LiveResultsTable({ scrips, side, enteredSet, emptyHint }: Props)
                     )}
                   </span>
                 </TableCell>
-                <TableCell className="text-right font-mono text-[13px] tabular-nums">
-                  {fmt(livePrice(prices, s.cashKey, s.cashLtp))}
+                <TableCell className="text-right text-[13px]">
+                  <LivePrice instrument={s.cashKey} fallback={s.cashLtp} />
+                </TableCell>
+                <TableCell className="text-right text-[13px]">
+                  <LiveChange instrument={s.cashKey} from={s.prevClose ?? s.dayOpen} fallback={s.cashLtp} />
                 </TableCell>
                 <TableCell className="text-right">
                   <RsiMomentum rsi={p?.rsi14} signal={p?.rsiSignal} />

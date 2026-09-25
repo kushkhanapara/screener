@@ -6,7 +6,8 @@ import { getLtp } from "../data/upstox.js";
 import { buildRows } from "../core/rows.js";
 import { evaluate, hasHistory } from "../core/strategy.js";
 import { isMarketOpen, HAS_TOKEN } from "../config.js";
-import { istMinutes, istDay, istDateString } from "../core/session.js";
+import { istMinutes, istDay, istDateString, sessionBars } from "../core/session.js";
+import { getDailyStats } from "./dailyService.js";
 import { log } from "../logger.js";
 
 const logger = log("live");
@@ -73,7 +74,9 @@ const stoppedHooks = []; // () => void
 const latestPrices = new Map(); // instrument key -> ltp
 const dirtyPrices = new Set();
 let priceTimer = null;
-const PRICE_PUSH_MS = 1000;
+// Broker-terminal feel: push changed prices four times a second. Only keys that
+// moved go in each frame, so this stays small even with 400+ instruments.
+const PRICE_PUSH_MS = 250;
 
 /** Receive `{type:"prices", ts, ltp:{key:price}}` frames with changed keys only. */
 export function onPrices(fn) {
@@ -367,10 +370,17 @@ async function recompute() {
     const cashLtp = tf3.close ?? tf15.close ?? null;
     const trend = trendOf(tf15.dataLimited ? tf3 : tf15);
 
+    // Reference prices travel with the row so the browser can work out the
+    // change on every tick, instead of waiting a minute for the next rebuild.
+    const today = sessionBars(store3m.bars(u.cashKey) ?? [], Date.now());
     scrips.push({
       underlying: u.underlying,
       cashKey: u.cashKey,
       cashLtp,
+      prevClose: getDailyStats(u.underlying)?.prevClose ?? null,
+      dayOpen: today.length ? today[0].open : null,
+      dayHigh: today.length ? Math.max(...today.map((b) => b.high)) : null,
+      dayLow: today.length ? Math.min(...today.map((b) => b.low)) : null,
       trend,
       longMatch,
       shortMatch,

@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils"
 import { hhmm, num, rMultiple, rupees, toneClass } from "@/components/paper/format"
 import { TERMS, sideWord } from "@/lib/glossary"
 import type { PaperPosition } from "@/lib/api"
+import { usePriceMap } from "@/lib/priceStore"
+import { markToMarket } from "@/lib/prices"
 
 /** How far price has travelled from entry toward the stop, as a 0–1 fraction. */
 function riskUsed(p: PaperPosition) {
@@ -32,7 +34,11 @@ function Th({ children, tip, right }: { children: string; tip?: string; right?: 
 }
 
 /** Open paper trades, marked to the live futures price. */
-export function PositionsTable({ positions, targetR }: { positions: PaperPosition[]; targetR?: number }) {
+export function PositionsTable({ positions: incoming, targetR }: { positions: PaperPosition[]; targetR?: number }) {
+  // Marked here from the live store, so price, R and open profit move with the
+  // market rather than with the 3-second snapshot.
+  const prices = usePriceMap()
+  const positions = incoming.map((p) => markToMarket(p, prices))
   if (!positions.length) {
     return (
       <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed py-14">
