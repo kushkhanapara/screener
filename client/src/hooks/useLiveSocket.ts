@@ -86,7 +86,7 @@ export function useLiveSocket(): LiveSocketState {
           if (msg.type === "prices") {
             // Straight into the price store: components subscribed to one
             // instrument update on this frame, without re-rendering the app.
-            applyPriceFrame(msg.ltp ?? {}, Boolean(msg.full))
+            applyPriceFrame(msg.ltp ?? {}, Boolean(msg.full), msg.quote ?? {})
             if (msg.full) pricesRef.current = {}
             Object.assign(pricesRef.current, msg.ltp ?? {})
             pricesDirty.current = true

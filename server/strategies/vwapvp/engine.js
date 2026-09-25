@@ -23,9 +23,17 @@ import * as base from "../../paper/engine.js";
  * otherwise the strategy's ATR/R defaults apply, exactly as for any strategy.
  */
 
+/**
+ * This trade's own levels. Only `features` is saved with a live position, so
+ * the levels ride there too and survive a server restart mid-trade.
+ */
+function levelsOf(position) {
+  return position.levels ?? position.features?.vpLevels ?? null;
+}
+
 /** A copy of the strategy carrying this position's own targetR / breakevenAtR. */
 function exitsFor(position, strategy) {
-  const lv = position.levels;
+  const lv = levelsOf(position);
   if (!lv || (lv.targetR == null && lv.breakevenAtR == null)) return strategy;
   return {
     ...strategy,
@@ -38,7 +46,7 @@ function exitsFor(position, strategy) {
 }
 
 function closedBeyondZone(position, price) {
-  const inv = position.levels?.invalidateAt;
+  const inv = levelsOf(position)?.invalidateAt;
   if (inv == null || !Number.isFinite(price)) return false;
   return position.side === "long" ? price < inv : price > inv;
 }
@@ -67,6 +75,10 @@ export function openPosition(args) {
   };
   position.levels.targetR = position.levels.targetPrice != null ? inR(position.levels.targetPrice) : null;
   position.levels.breakevenAtR = position.levels.breakevenAt != null ? inR(position.levels.breakevenAt) : null;
+  const lv = position.levels;
+  if (lv.targetPrice != null || lv.breakevenAt != null || lv.invalidateAt != null) {
+    position.features = { ...(position.features ?? {}), vpLevels: lv };
+  }
   return position;
 }
 

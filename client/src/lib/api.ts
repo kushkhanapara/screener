@@ -92,6 +92,10 @@ export type LiveStatus = {
   error: string | null
   /** Set when the feed cannot recover on its own — e.g. a rejected token. */
   fatal?: string | null
+  /** Socket open but no data for 30s+: prices are frozen; the server is reconnecting. */
+  stale?: boolean
+  /** Bars are being checked/rebuilt from Upstox (after startup or a gap); new entries wait. */
+  repairing?: boolean
 }
 
 export type LiveUpdate = {
@@ -156,6 +160,13 @@ export type PaperPosition = {
   ltp: number | null
   unrealisedR: number | null
   unrealisedPnl: number | null
+  /** What open profit is marked at: best bid (long) / ask (short), else the last trade. */
+  markPrice?: number | null
+  markSource?: "bid" | "ask" | "last" | null
+  /** The cash (spot) price when the signal fired; the entry itself is on the future. */
+  cashPriceAtSignal?: number | null
+  /** VWAP + Volume Profile keeps its own levels here (futures prices). */
+  features?: { vpLevels?: { targetPrice?: number | null } | null } | null
 }
 
 /** A closed paper trade. */

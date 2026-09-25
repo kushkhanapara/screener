@@ -37,10 +37,9 @@ import * as vpEngine from "./engine.js";
  * Everything is computed from ctx.bars — closed bars only — so the replay and
  * live read the same inputs, and the other strategies pay nothing for it.
  *
- * SEPARATE FROM THE OTHER STRATEGIES, on purpose — this one is still being
- * learned. It is not in the live registry (strategies/index.js), and its exits
- * run through its own ./engine.js, which layers on the shared paper engine
- * without modifying it. Only the replay runs it: `npm run replay -- --vwapvp`.
+ * Paper-traded live beside the other strategies (strategies/index.js), but its
+ * exits run through its own ./engine.js, which layers on the shared paper
+ * engine without modifying it. Compare its setups with `npm run replay -- --vwapvp`.
  */
 
 export const VWAP_VP_DEFAULTS = Object.freeze({
@@ -291,7 +290,7 @@ export function vwapVolumeProfile(over = {}) {
     },
     regimeFilter: false,
     noRetryAfterLoss: true,
-    // The replay uses this instead of the shared engine for this strategy only.
+    // The replay and the paper service use this instead of the shared engine.
     engine: vpEngine,
     evaluate,
   });

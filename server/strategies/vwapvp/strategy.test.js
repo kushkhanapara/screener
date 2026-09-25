@@ -87,11 +87,11 @@ test("has the exits and trigger timeframe the engine and registry require", () =
 
 // ── Kept apart from the other strategies ────────────────────────────────
 
-test("is not in the live registry — it only runs in the replay", async () => {
+test("trades live on paper; its trend-only and rotation-only books stay in the replay", async () => {
   const registry = await import("../index.js");
-  assert.equal(registry.get(vp.id), undefined);
-  assert.ok(!registry.ids().some((id) => id.startsWith("vwap-vp") || id === vp.id));
-  assert.deepEqual(registry.validate(), [], "the live strategies are untouched and still valid");
+  assert.equal(registry.get(vp.id), vp);
+  assert.ok(!registry.ids().some((id) => id.startsWith("vwap-vp")));
+  assert.deepEqual(registry.validate(), [], "every live strategy is still valid");
 });
 
 test("brings its own exit engine, so the shared one is not changed", async () => {

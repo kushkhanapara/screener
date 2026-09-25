@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { store3m, store15m, storeIndex3m } from "../live/candleStore.js";
 import { seedWindow } from "../live/seed.js";
-import { getDailyCandles } from "../data/upstox.js";
+import { getDailyCandles, getIntradayCandles, getHistoricalCandles } from "../data/upstox.js";
 import { getUniverse, getUnderlyings } from "../data/instruments.js";
 import { list as listStrategies, get as getStrategy, familyOf } from "../strategies/index.js";
 import { buildContext, regimeAllows } from "../strategies/context.js";
 import * as engine from "../paper/engine.js";
+import { levelsToFutures } from "../strategies/vwapvp/engine.js";
 import * as store from "../paper/store.js";
 import { compute } from "../paper/metrics.js";
 import { canAfford, deployedCapital, capitalState } from "../paper/capital.js";
@@ -59,6 +60,7 @@ const state = {
   started: false,
   futByUnderlying: new Map(), // underlying -> near-month contract
   futPrices: new Map(), // futures key -> { ltp, ts }
+  futQuotes: new Map(), // futures key -> { bid, ask, ts } — best bid/ask, between trades
   indexStore: storeIndex3m,
   positions: new Map(), // position id -> position
   lastBarSeen: new Map(), // `${strategyId}:${underlying}:${tf}` -> bucket ms
@@ -103,12 +105,120 @@ export function init() {
 
   live.registerKeys(() => subscriptionKeys());
   live.onTick(handleTick);
+  live.onQuote((key, bid, ask, ts) => state.futQuotes.set(key, { bid, ask, ts }));
   live.onStarted(onSessionStart);
   live.onStopped(onSessionEnd);
 
   logger.info(
     `paper engine ready — ${listStrategies().length} strategies, ${state.positions.size} open positions restored`
   );
+
+  // Positions the engine was not watching (restart, sleep, dead feed) are
+  // brought up to date from the contract's real bars — see catchUpPositions.
+  setTimeout(() => catchUpPositions("restart").catch((e) => logger.error(`catch-up failed: ${e.message}`)), 5_000);
+  setInterval(() => {
+    if (state.started && live.isFeedHealthy()) return; // the live engine is managing them
+    catchUpPositions("engine not running").catch((e) => logger.error(`catch-up failed: ${e.message}`));
+  }, CATCHUP_EVERY_MS).unref?.();
+}
+
+/*
+ * Catch-up for positions nobody was watching.
+ *
+ * Bar-close exits and the square-off run inside the evaluation loop, which only
+ * runs while the feed is live and seeded. When it is not — the machine slept
+ * (25 Sept 2026: 13:14 → 20:33, with a position open), the process restarted,
+ * the feed died — a position simply sat there: no stop, no square-off, then
+ * restored the next time as if still live.
+ *
+ * So the gap is replayed from the contract's own settled 3-minute futures bars
+ * through the strategy's exit engine (applyBar — the replay's rules: a bar
+ * whose range holds the stop takes the stop). position.barsHeld counts the bar
+ * closes already applied, so exactly the missing ones are replayed, and the
+ * exit lands at the price and time it would have. A position past its
+ * square-off with no bars to close on is left open and reported, never closed
+ * at an invented price.
+ */
+const CATCHUP_EVERY_MS = 60_000;
+const CATCHUP_SETTLE_MS = 90_000; // REST bars are incomplete just after the close
+let catchingUp = false;
+
+async function futuresBars3m(futKey, sessionStart) {
+  const day = istDateString(sessionStart);
+  const candles =
+    day === istDateString(Date.now())
+      ? await getIntradayCandles(futKey, "minutes", 3)
+      : await getHistoricalCandles(futKey, "minutes", 3, day, day);
+  return new Map(
+    candles.map((c) => {
+      const time = new Date(c.time).getTime();
+      return [time, { time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }];
+    })
+  );
+}
+
+async function catchUpPositions(reason) {
+  if (catchingUp || !HAS_TOKEN || !state.positions.size) return;
+  catchingUp = true;
+  try {
+    for (const position of [...state.positions.values()]) {
+      const strategy = getStrategy(position.strategyId);
+      if (!strategy || !position.futKey) continue;
+      const session = sessionStartMs(position.entryTime);
+      const squareOffAt = session + (strategy.exits.squareOffMin - (9 * 60 + 15)) * 60_000;
+      const firstClose = Math.floor(position.entryTime / BAR_MS) * BAR_MS + BAR_MS;
+      const now = Date.now();
+      // Nothing missed yet: the next unapplied bar has not settled.
+      if (firstClose + position.barsHeld * BAR_MS + CATCHUP_SETTLE_MS > now) continue;
+
+      let bars;
+      try {
+        bars = await futuresBars3m(position.futKey, session);
+      } catch (e) {
+        logger.error(`catch-up: no futures bars for ${position.underlying} (${e.message})`);
+        continue;
+      }
+      if (!state.positions.has(position.id)) continue; // closed live meanwhile
+
+      const eng = engineOf(strategy);
+      let p = position;
+      let exit = null;
+      let exitAt = null;
+      let applied = 0;
+      for (let close = firstClose + position.barsHeld * BAR_MS; close <= squareOffAt; close += BAR_MS) {
+        if (close + CATCHUP_SETTLE_MS > now) break;
+        const bar = bars.get(close - BAR_MS);
+        if (!bar) continue; // no trades in that bar
+        const r = eng.applyBar(p, strategy, bar, close);
+        applied++;
+        p = r.position;
+        if (r.exit) {
+          exit = r.exit;
+          exitAt = close;
+          break;
+        }
+      }
+
+      if (exit) {
+        logger.warn(
+          `catch-up (${reason}): ${p.strategyId} ${p.side} ${p.underlying} closed at ${exit.price} ` +
+            `(${exit.reason}) as of ${new Date(exitAt).toISOString()}, replaying ${applied} unwatched bars`
+        );
+        finalise(p, exit.price, exit.reason, exitAt);
+      } else if (applied) {
+        state.positions.set(p.id, p);
+        store.updatePosition(p);
+        logger.info(`catch-up (${reason}): ${p.underlying} brought up to date over ${applied} unwatched bars`);
+      } else if (now > squareOffAt + BAR_MS + CATCHUP_SETTLE_MS) {
+        logger.error(
+          `catch-up: ${p.underlying} is past its ${new Date(squareOffAt).toISOString()} square-off but Upstox ` +
+            "returned no futures bars to close it on — left open rather than closed at an invented price"
+        );
+      }
+    }
+  } finally {
+    catchingUp = false;
+  }
 }
 
 /**
@@ -139,9 +249,11 @@ function subscriptionKeys() {
 }
 
 /** Every tick: record futures prices, build index bars, manage open positions. */
-function handleTick(key, ltp, tsMs, qty) {
+function handleTick(key, ltp, tsMs, qty, minute = null) {
   if (key === NIFTY_KEY) {
     state.indexStore.addTick(key, ltp, tsMs, qty);
+    // The exchange's candle for the last completed minute: exact index bars.
+    if (minute) state.indexStore.applyMinute(key, minute.ts, minute);
     state.nifty.ltp = ltp; // every tick, so the header moves with the market
     return;
   }
@@ -168,6 +280,11 @@ function isFuturesKey(key) {
   return typeof key === "string" && key.startsWith("NSE_FO|");
 }
 
+/** The exit engine a strategy trades with: its own when it has one, else the shared one. */
+function engineOf(strategy) {
+  return strategy?.engine ?? engine;
+}
+
 /** Run the exit machine for every open position on this futures contract. */
 function manageOpenPositionsFor(futKey, price, now) {
   for (const position of state.positions.values()) {
@@ -175,7 +292,7 @@ function manageOpenPositionsFor(futKey, price, now) {
     const strategy = getStrategy(position.strategyId);
     if (!strategy) continue;
 
-    const { exit, position: next } = engine.checkExit(position, strategy, price, now);
+    const { exit, position: next } = engineOf(strategy).checkExit(position, strategy, price, now);
     if (exit) {
       finalise(next, exit.price, exit.reason, now);
     } else if (next !== position) {
@@ -278,7 +395,7 @@ function onSessionEnd() {
     finalise(position, price, "squareoff", now);
   }
   state.started = false;
-  clearInterval(state.timer);
+  clearTimeout(state.timer);
   state.timer = null;
 }
 
@@ -287,18 +404,35 @@ function istDate(daysBack = 0) {
   return new Date(now - daysBack * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+// Upstox stamps ticks with the exchange trade time and delivers them a moment
+// late, and the exchange minute candle that finalises a bar arrives with the
+// first snapshot after its boundary. Reading the
+// bar this long after it closes catches them.
+const BAR_CLOSE_GRACE_MS = 5000;
+
 /**
- * Evaluate shortly after each 3-minute boundary. The offset gives the tick
- * stream a moment to deliver the bar's final trades before it is read as closed.
+ * Evaluate right as each 3-minute bar closes (plus the grace above), rather
+ * than on a free-running 20-second timer that noticed a closed bar anywhere
+ * from 0 to 20 seconds late — and entered, or ran the bar-close exits, at
+ * whatever the price had become by then. 3-minute boundaries fall on 09:15 IST
+ * and every 3 minutes after, which are whole multiples of 3 minutes since the
+ * epoch.
  */
 function scheduleEvaluation() {
-  clearInterval(state.timer);
-  state.timer = setInterval(() => {
-    evaluate().catch((e) => {
-      state.error = String(e.message || e);
-      logger.error(state.error);
-    });
-  }, 20 * 1000);
+  clearTimeout(state.timer);
+  const now = Date.now();
+  const next = Math.floor(now / BAR_MS) * BAR_MS + BAR_MS + BAR_CLOSE_GRACE_MS;
+  const wait = next - BAR_MS - now > 0 ? next - BAR_MS - now : next - now;
+  state.timer = setTimeout(() => {
+    evaluate()
+      .catch((e) => {
+        state.error = String(e.message || e);
+        logger.error(state.error);
+      })
+      .finally(() => {
+        if (state.timer) scheduleEvaluation();
+      });
+  }, wait);
 }
 
 /** One evaluation pass across every strategy and underlying. */
@@ -306,6 +440,15 @@ export async function evaluate(now = Date.now()) {
   if (!HAS_TOKEN) return;
 
   enforceSquareOff(now);
+  // A silent feed means frozen bars and frozen prices: judging a bar close or
+  // opening a trade on them is acting on data that is not the market. Stops
+  // still run on every tick the moment data returns; bar-based decisions wait
+  // until the bars have been rebuilt.
+  if (!live.isFeedHealthy()) {
+    state.error = "live feed not delivering — no bar-close exits or new entries until it recovers";
+    return;
+  }
+  if (state.error?.startsWith("live feed not delivering")) state.error = null;
   // Before entries, so a trade cut by prove-it frees its margin for this bar.
   manageBarCloses(now);
 
@@ -333,7 +476,7 @@ export async function evaluate(now = Date.now()) {
 
     for (const strategy of strategies) {
       // One evaluation per closed bar per strategy — the guard that stops a
-      // single bar from being traded repeatedly as the 20s timer fires.
+      // single bar from being traded twice if an evaluation ever runs again on it.
       const seenKey = `${strategy.id}:${u.underlying}:3m`;
       if (state.lastBarSeen.get(seenKey) === lastBar3) continue;
       state.lastBarSeen.set(seenKey, lastBar3);
@@ -435,7 +578,7 @@ async function tryOpen(strategy, signal, ctx, underlying, barTime, now, quality 
 
   // Structural: a setup needing multiple R cannot travel that far in the few
   // minutes before the forced square-off.
-  if (!engine.entriesAllowed(strategy, now)) {
+  if (!engineOf(strategy).entriesAllowed(strategy, now)) {
     record(false, "too close to square-off");
     return false;
   }
@@ -502,10 +645,12 @@ async function tryOpen(strategy, signal, ctx, underlying, barTime, now, quality 
   }).catch(() => null);
 
   try {
-    const position = engine.openPosition({
+    // A strategy that places its own levels reads them off the cash chart; the
+    // position is filled and watched on the future, so move them across.
+    const position = engineOf(strategy).openPosition({
       runId: RUN_ID,
       strategy,
-      signal,
+      signal: strategy.engine ? levelsToFutures(signal, ctx.rows["3m"].latest.close, quote.ltp) : signal,
       underlying: underlying.underlying,
       futKey: contract.key,
       futLabel: contract.label,
@@ -590,7 +735,7 @@ function manageBarCloses(now) {
     const price = state.futPrices.get(position.futKey)?.ltp;
     if (!Number.isFinite(price)) continue;
 
-    const { exit, position: next } = engine.manageBarClose(position, strategy, price, now);
+    const { exit, position: next } = engineOf(strategy).manageBarClose(position, strategy, price, now);
     if (exit) {
       finalise(next, exit.price, exit.reason, now);
     } else {
@@ -632,20 +777,37 @@ export function getCapital(strategyId) {
   return capitalState(openPositionsOf(strategyId), CAPITAL_PER_STRATEGY);
 }
 
-/** Open positions, marked to the latest futures price. */
+/**
+ * The price an open position could exit at right now: the best bid for a long,
+ * the best ask for a short. A futures contract can go many seconds without a
+ * trade while its quotes keep moving, so this keeps open profit live. Falls
+ * back to the last trade when there is no quote on that side. Display only —
+ * stops and targets still fire on real trades (handleTick).
+ */
+function markOf(p) {
+  const last = state.futPrices.get(p.futKey)?.ltp ?? null;
+  const q = state.futQuotes.get(p.futKey);
+  const quoted = p.side === "long" ? q?.bid : q?.ask;
+  if (Number.isFinite(quoted) && quoted > 0) return { price: quoted, source: p.side === "long" ? "bid" : "ask", last };
+  return { price: last, source: last != null ? "last" : null, last };
+}
+
+/** Open positions, marked to the price they could exit at (see markOf). */
 export function getOpenPositions(strategyId = null) {
   const out = [];
   for (const p of state.positions.values()) {
     if (strategyId && p.strategyId !== strategyId) continue;
-    const quote = state.futPrices.get(p.futKey);
-    const ltp = quote?.ltp ?? null;
+    const mark = markOf(p);
+    const price = mark.price;
     out.push({
       ...p,
-      ltp,
-      unrealisedR: ltp != null ? engine.unrealisedR(p, ltp) : null,
+      ltp: mark.last,
+      markPrice: price,
+      markSource: mark.source,
+      unrealisedR: price != null ? engine.unrealisedR(p, price) : null,
       unrealisedPnl:
-        ltp != null
-          ? (p.side === "long" ? ltp - p.entryPrice : p.entryPrice - ltp) * p.qty
+        price != null
+          ? (p.side === "long" ? price - p.entryPrice : p.entryPrice - price) * p.qty
           : null,
     });
   }

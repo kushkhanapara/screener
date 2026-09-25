@@ -15,6 +15,9 @@ const MASTER_URL =
 
 let cachedContracts = null;
 let cachedUnderlyings = null;
+let loadedForDate = null; // IST date the universe was last loaded on
+
+const istDate = (ms) => new Date(ms + (5 * 60 + 30) * 60 * 1000).toISOString().slice(0, 10);
 
 /** Download + gunzip + parse the instrument master (array of records). */
 async function fetchMaster() {
@@ -102,7 +105,28 @@ export async function loadFuturesUniverse(nowMs = Date.now()) {
   );
 
   cachedContracts = contracts;
+  loadedForDate = istDate(nowMs);
   return contracts;
+}
+
+/**
+ * The universe, loaded at most once per IST day.
+ *
+ * A process can outlive an expiry: loaded once and kept, yesterday's list still
+ * names the contract that expired as the "near month", so positions would open
+ * on an instrument that no longer trades. Reload on a new day; if the download
+ * fails, keep the old list but drop anything already expired, so the nearest
+ * contract left is always a live one.
+ */
+export async function ensureFreshUniverse(nowMs = Date.now()) {
+  if (cachedContracts && loadedForDate === istDate(nowMs)) return cachedContracts;
+  try {
+    return await loadFuturesUniverse(nowMs);
+  } catch (e) {
+    if (!cachedContracts) throw e;
+    cachedContracts = cachedContracts.filter((c) => c.expiryMs > nowMs);
+    return cachedContracts;
+  }
 }
 
 /** Return the last-loaded futures contracts (or null if not loaded yet). */

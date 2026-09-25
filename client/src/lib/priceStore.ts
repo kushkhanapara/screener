@@ -19,25 +19,46 @@ export type Tick = {
 }
 
 const ticks = new Map<string, Tick>()
+/** Futures best [bid, ask] — they move between trades. */
+const quotes = new Map<string, [number | null, number | null]>()
 const listeners = new Map<string, Set<() => void>>()
 let version = 0
 const globalListeners = new Set<() => void>()
 
 /** Apply one "prices" frame from the socket. */
-export function applyPriceFrame(ltp: Record<string, number>, full = false) {
-  if (full) ticks.clear()
+export function applyPriceFrame(
+  ltp: Record<string, number>,
+  full = false,
+  quote: Record<string, [number | null, number | null]> = {}
+) {
+  if (full) {
+    ticks.clear()
+    quotes.clear()
+  }
   const now = Date.now()
+  const touched = new Set<string>()
+  for (const [key, q] of Object.entries(quote ?? {})) {
+    if (!Array.isArray(q)) continue
+    quotes.set(key, q)
+    touched.add(key)
+  }
   for (const [key, price] of Object.entries(ltp ?? {})) {
     if (!Number.isFinite(price)) continue
     const before = ticks.get(key)
     if (before?.ltp === price) continue
     ticks.set(key, { ltp: price, prev: before?.ltp ?? price, ts: now })
+    touched.add(key)
+  }
+  for (const key of touched) {
     const subs = listeners.get(key)
     if (subs) for (const fn of subs) fn()
   }
   version++
   for (const fn of globalListeners) fn()
 }
+
+/** Best bid and ask for a futures key, when the feed has quoted it. */
+export const getQuote = (key: string | null | undefined) => (key ? (quotes.get(key) ?? null) : null)
 
 export const getTick = (key: string | null | undefined) => (key ? (ticks.get(key) ?? null) : null)
 

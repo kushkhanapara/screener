@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react"
+import { getQuote } from "@/lib/priceStore"
 
 /**
  * Live last-traded prices by instrument key, pushed over the socket as
@@ -28,20 +29,33 @@ type Markable = {
   ltp: number | null
   unrealisedR: number | null
   unrealisedPnl?: number | null
+  markPrice?: number | null
+  markSource?: "bid" | "ask" | "last" | null
 }
 
 /**
  * Re-mark an open position to the live price. Same arithmetic as the server's
  * engine.unrealisedR, so the numbers agree once the next snapshot lands. Each
  * view marks only its own positions — paper and shadow are never combined.
+ *
+ * The mark is the price the position could exit at: the best bid for a long,
+ * the best ask for a short. Quotes move between trades, so this stays live
+ * while the contract is quiet. Without a quote it is the last trade. `ltp`
+ * stays the last trade.
  */
 export function markToMarket<T extends Markable>(p: T, prices: PriceMap): T {
   const ltp = livePrice(prices, p.futKey, p.ltp)
-  if (ltp == null || ltp === p.ltp) return p
-  const perUnit = p.side === "long" ? ltp - p.entryPrice : p.entryPrice - ltp
+  const q = getQuote(p.futKey)
+  const quoted = q ? (p.side === "long" ? q[0] : q[1]) : null
+  const useQuote = quoted != null && Number.isFinite(quoted) && quoted > 0
+  const mark = useQuote ? quoted : ltp
+  if (mark == null) return p
+  const perUnit = p.side === "long" ? mark - p.entryPrice : p.entryPrice - mark
   return {
     ...p,
     ltp,
+    markPrice: mark,
+    markSource: useQuote ? (p.side === "long" ? "bid" : "ask") : "last",
     unrealisedR: p.riskPerUnit ? perUnit / p.riskPerUnit : p.unrealisedR,
     unrealisedPnl: perUnit * p.qty,
   }

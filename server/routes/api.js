@@ -9,6 +9,7 @@ import * as swing from "../services/swingService.js";
 import { upstoxLimiter } from "../data/rateLimiter.js";
 import { tokenStatus } from "../data/upstox.js";
 import * as candleCache from "../data/candleCache.js";
+import { runDataCheck } from "../services/dataCheck.js";
 import { HAS_TOKEN } from "../config.js";
 
 export const api = Router();
@@ -60,6 +61,25 @@ api.get("/diagnostics", (_req, res) => {
     rateLimiter: upstoxLimiter.stats(),
     candleCache: candleCache.stats(),
   });
+});
+
+/**
+ * Compare today's in-memory bars and live prices with Upstox's own, for a
+ * sample of names. Read-only; costs ~2 REST calls per name.
+ * ?n=10 (max 40) or ?symbols=RELIANCE,TCS
+ */
+api.get("/diagnostics/data-check", async (req, res) => {
+  try {
+    const n = Math.min(Number(req.query.n) || 10, 40);
+    const symbols = req.query.symbols ? String(req.query.symbols).split(",") : null;
+    res.json(await runDataCheck({ n, symbols }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+api.get("/diagnostics/feed-raw", (req, res) => {
+  res.json(live.debugFeed(String(req.query.key || "")));
 });
 
 // Paper trading -----------------------------------------------------------

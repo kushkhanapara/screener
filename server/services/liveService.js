@@ -1,8 +1,8 @@
-import { loadFuturesUniverse, getUniverse, getUnderlyings } from "../data/instruments.js";
-import { store3m, store15m } from "../live/candleStore.js";
+import { ensureFreshUniverse, getUniverse, getUnderlyings } from "../data/instruments.js";
+import { store3m, store15m, storeIndex3m } from "../live/candleStore.js";
 import { seedAll, prewarmHistory } from "../live/seed.js";
 import { UpstoxFeed } from "../live/upstoxFeed.js";
-import { getLtp } from "../data/upstox.js";
+import { getLtp, getIntradayCandles } from "../data/upstox.js";
 import { buildRows } from "../core/rows.js";
 import { evaluate, hasHistory } from "../core/strategy.js";
 import { isMarketOpen, HAS_TOKEN } from "../config.js";
@@ -30,6 +30,15 @@ const state = {
   started: false,
   connected: false,
   lastTickTs: null,
+  feedOpenedAt: null, // when this session's feed was opened
+  seededAt: null, // when seeding finished; bars starting after it are purely tick-built
+  allKeys: [], // everything the single feed connection subscribes
+  lastTickAt: null, // WALL-CLOCK time of the last trade message (lastTickTs is the exchange stamp)
+  stale: false, // true while the feed is open but has stopped delivering
+  staleSince: null,
+  reconnects: 0,
+  repairing: false,
+  repairsPending: 0, // blocking repairs scheduled or running: no new entries meanwhile
   lastError: null,
   matchLong: new Set(), // underlyings currently matching Long (either timeframe)
   matchShort: new Set(),
@@ -60,6 +69,7 @@ export function setBroadcaster(fn) {
 const extraKeyProviders = []; // () => string[]  — consulted at connect time
 const priceListeners = []; // (frame) => void — throttled last-traded prices
 const tickListeners = []; // (key, ltp, tsMs, qty) => void
+const quoteListeners = []; // (key, bid, ask, tsMs) => void — futures best bid/ask
 const startedHooks = []; // () => void|Promise
 const stoppedHooks = []; // () => void
 
@@ -73,27 +83,42 @@ const stoppedHooks = []; // () => void
  */
 const latestPrices = new Map(); // instrument key -> ltp
 const dirtyPrices = new Set();
+// Futures best bid/ask. Quotes move between trades, so they are what keeps an
+// open position's price live when its contract has not traded for a while.
+const latestQuotes = new Map(); // instrument key -> [bid, ask]
+const dirtyQuotes = new Set();
 let priceTimer = null;
 // Broker-terminal feel: push changed prices four times a second. Only keys that
 // moved go in each frame, so this stays small even with 400+ instruments.
 const PRICE_PUSH_MS = 250;
 
-/** Receive `{type:"prices", ts, ltp:{key:price}}` frames with changed keys only. */
+/** Receive `{type:"prices", ts, ltp:{key:price}, quote?:{key:[bid,ask]}}` frames with changed keys only. */
 export function onPrices(fn) {
   priceListeners.push(fn);
 }
 
 /** Every known price, for a client that has just connected. */
 export function getPricesSnapshot() {
-  return { type: "prices", ts: Date.now(), full: true, ltp: Object.fromEntries(latestPrices) };
+  return {
+    type: "prices",
+    ts: Date.now(),
+    full: true,
+    ltp: Object.fromEntries(latestPrices),
+    quote: Object.fromEntries(latestQuotes),
+  };
 }
 
 function flushPrices() {
-  if (!dirtyPrices.size) return;
+  if (!dirtyPrices.size && !dirtyQuotes.size) return;
   const ltp = {};
   for (const k of dirtyPrices) ltp[k] = latestPrices.get(k);
   dirtyPrices.clear();
   const frame = { type: "prices", ts: Date.now(), ltp };
+  if (dirtyQuotes.size) {
+    frame.quote = {};
+    for (const k of dirtyQuotes) frame.quote[k] = latestQuotes.get(k);
+    dirtyQuotes.clear();
+  }
   for (const fn of priceListeners) {
     try {
       fn(frame);
@@ -111,6 +136,16 @@ export function registerKeys(fn) {
 /** Receive every tick from the shared feed, for any subscribed key. */
 export function onTick(fn) {
   tickListeners.push(fn);
+}
+
+/** Last traded price the feed has seen for a key, or undefined. */
+export function latestPrice(key) {
+  return latestPrices.get(key);
+}
+
+/** Receive every best bid/ask change for the futures (full-mode) keys. */
+export function onQuote(fn) {
+  quoteListeners.push(fn);
 }
 
 /** Called once the feed is connected and seeded, each session. */
@@ -181,7 +216,7 @@ function maybePrewarm(now = Date.now()) {
   state.prewarmedDate = today;
   const t0 = Date.now();
   (async () => {
-    if (!getUniverse()) await loadFuturesUniverse();
+    await ensureFreshUniverse();
     const underlyings = getUnderlyings() || [];
     logger.info(`pre-market warm-up: fetching seed history for ${underlyings.length} underlyings…`);
     const warmed = await prewarmHistory(underlyings);
@@ -197,7 +232,7 @@ async function start() {
   state.starting = true;
   state.lastError = null;
   try {
-    if (!getUniverse()) await loadFuturesUniverse();
+    await ensureFreshUniverse();
     state.underlyings = getUnderlyings() || [];
 
     // Group active futures contracts by underlying (for LTP display).
@@ -217,9 +252,6 @@ async function start() {
     const cashKeys = state.underlyings.map((u) => u.cashKey).filter(Boolean);
     cashKeySet = new Set(cashKeys);
 
-    logger.info(`seeding ${state.underlyings.length} underlyings (3m + 15m cash)…`);
-    const seeded = await seedAll(state.underlyings);
-
     // Keys other consumers need on the same connection (futures, index).
     const extraKeys = [];
     for (const provider of extraKeyProviders) {
@@ -230,45 +262,35 @@ async function start() {
       }
     }
     const allKeys = [...new Set([...cashKeys, ...extraKeys])];
+    // Feed FIRST, history second. Seeding 211 names takes minutes; with the
+    // feed waiting on it, a restart left prices frozen and open positions
+    // unwatched for that whole time. Ticks that arrive meanwhile build bars the
+    // seed merges into (CandleStore.seed), and paper stops run on every futures
+    // tick from the moment the feed opens.
     logger.info(
-      `seeded ${seeded} underlyings; opening feed (${cashKeys.length} cash + ${extraKeys.length} extra = ${allKeys.length} keys)`
+      `opening feed (${cashKeys.length} cash + ${extraKeys.length} extra = ${allKeys.length} keys), then seeding`
     );
 
-    state.feed = new UpstoxFeed({
-      onTick: (key, ltp, tsMs, qty) => {
-        // Only cash keys feed the screener's candle stores; futures and index
-        // ticks are handled by their own consumers, so they do not bloat these.
-        if (cashKeySet.has(key)) {
-          store3m.addTick(key, ltp, tsMs, qty);
-          store15m.addTick(key, ltp, tsMs, qty);
-        }
-        state.lastTickTs = tsMs;
-        if (Number.isFinite(ltp) && latestPrices.get(key) !== ltp) {
-          latestPrices.set(key, ltp);
-          dirtyPrices.add(key);
-        }
-        for (const fn of tickListeners) {
-          try {
-            fn(key, ltp, tsMs, qty);
-          } catch {
-            /* one bad listener must not stall the feed */
-          }
-        }
-      },
-      onState: ({ connected, error, fatal }) => {
-        state.connected = connected;
-        if (error) state.lastError = error;
-        if (fatal) {
-          state.fatal = error;
-          logger.error(error);
-        }
-      },
-    });
-    state.feed.connect(allKeys);
-
-    state.started = true;
+    state.allKeys = allKeys;
+    openFeed();
+    state.feedOpenedAt = Date.now();
     clearInterval(priceTimer);
     priceTimer = setInterval(flushPrices, PRICE_PUSH_MS);
+
+    // Screening and new entries wait for history: they need it to be right.
+    logger.info(`seeding ${state.underlyings.length} underlyings (3m + 15m cash)…`);
+    const seeded = await seedAll(state.underlyings);
+    logger.info(`seeded ${seeded} underlyings`);
+    state.seededAt = Date.now();
+    // Bars that were forming while the feed opened and seeding ran are part
+    // REST, part ticks. Replace them with the exchange's own once those have
+    // settled. New entries wait for the 3m pass; the 15m pass runs in the
+    // background when the 15m bar that was forming has closed and settled.
+    const closeOf = (ms, bar) => Math.floor(ms / bar) * bar + bar;
+    scheduleRepair("startup (3m)", closeOf(state.seededAt, BAR_3M_MS) + REST_SETTLE_MS + 5_000, true);
+    scheduleRepair("startup (15m)", closeOf(state.seededAt, BAR_15M_MS) + REST_SETTLE_MS + 5_000, false);
+
+    state.started = true;
     await recompute(); // initial set from seeded data
     scheduleMinute();
 
@@ -284,6 +306,187 @@ async function start() {
   }
 }
 
+/*
+ * One feed connection, and a watchdog on it.
+ *
+ * Upstox allows one market-data connection per token. A second one (another
+ * copy of this app, a script) does not close the first: the first stays "open"
+ * and simply stops receiving data. On 25 Sept 2026 two copies ran for hours
+ * that way, each showing "connected" on frozen prices while strategies traded
+ * on bars that had stopped updating.
+ *
+ * So silence is treated as failure. During market hours ~420 instruments trade
+ * every few seconds; nothing for STALL_MS means the feed is dead whatever the
+ * socket says. The watchdog marks it stale (new entries stop), reconnects, and
+ * once data flows again replaces the bars built during the gap with the
+ * exchange's own candles.
+ */
+const BAR_3M_MS = 3 * 60 * 1000;
+const BAR_15M_MS = 15 * 60 * 1000;
+// Upstox's REST candle for a bar is incomplete for a while after the bar
+// closes (seen 25 Sept 2026 at +20s; complete a few minutes later).
+const REST_SETTLE_MS = 90_000;
+const STALL_MS = 30_000;
+const WATCHDOG_MS = 5_000;
+const NIFTY_KEY = "NSE_INDEX|Nifty 50";
+let watchdogTimer = null;
+
+function openFeed() {
+  // Upstox allows one connection: close any previous one before opening.
+  if (state.feed) state.feed.disconnect();
+  state.feed = new UpstoxFeed({
+    onTick: (key, ltp, tsMs, qty, minute) => {
+      state.lastTickAt = Date.now();
+      if (state.stale) onFeedRecovered();
+      // Only cash keys feed the screener's candle stores; futures and index
+      // ticks are handled by their own consumers, so they do not bloat these.
+      if (cashKeySet.has(key)) {
+        store3m.addTick(key, ltp, tsMs, qty);
+        store15m.addTick(key, ltp, tsMs, qty);
+        // The exchange candle for the last completed minute: exact, and it
+        // replaces the snapshot-built version of that minute in both stores.
+        if (minute) {
+          store3m.applyMinute(key, minute.ts, minute);
+          store15m.applyMinute(key, minute.ts, minute);
+        }
+      }
+      state.lastTickTs = tsMs;
+      if (Number.isFinite(ltp) && latestPrices.get(key) !== ltp) {
+        latestPrices.set(key, ltp);
+        dirtyPrices.add(key);
+      }
+      for (const fn of tickListeners) {
+        try {
+          fn(key, ltp, tsMs, qty, minute);
+        } catch {
+          /* one bad listener must not stall the feed */
+        }
+      }
+    },
+    onQuote: (key, bid, ask, tsMs) => {
+      const prev = latestQuotes.get(key);
+      if (!prev || prev[0] !== bid || prev[1] !== ask) {
+        latestQuotes.set(key, [bid, ask]);
+        dirtyQuotes.add(key);
+      }
+      for (const fn of quoteListeners) {
+        try {
+          fn(key, bid, ask, tsMs);
+        } catch {
+          /* one bad listener must not stall the feed */
+        }
+      }
+    },
+    onState: ({ connected, error, fatal }) => {
+      state.connected = connected;
+      if (error) state.lastError = error;
+      if (fatal) {
+        state.fatal = error;
+        logger.error(error);
+      }
+    },
+  });
+  // Cash and futures in full mode: futures for their bid/ask, both for the
+  // cumulative day volume and the exchange's minute candles that make bars exact.
+  // The index too, for its minute candles (it has no volume or depth).
+  state.feed.connect(state.allKeys, {
+    fullKeys: state.allKeys.filter((k) => /^NSE_(FO|EQ|INDEX)\|/.test(k)),
+  });
+  state.lastTickAt = Date.now(); // the silence clock starts at the connect
+  clearInterval(watchdogTimer);
+  watchdogTimer = setInterval(watchdog, WATCHDOG_MS);
+}
+
+function watchdog() {
+  if (!state.feed || !isMarketOpen()) return;
+  const silentFor = Date.now() - (state.lastTickAt ?? 0);
+  if (silentFor < STALL_MS) return;
+  if (!state.stale) {
+    state.stale = true;
+    state.staleSince = state.lastTickAt;
+    logger.error(
+      `live feed stalled: no data for ${Math.round(silentFor / 1000)}s although the socket reports ` +
+        `${state.connected ? "open" : "closed"} — another connection on the same Upstox token ` +
+        "(a second copy of this app?) is the usual cause. Reconnecting."
+    );
+  }
+  state.lastError = `feed stalled — no data since ${new Date(state.staleSince).toISOString()}; reconnecting`;
+  state.reconnects++;
+  openFeed();
+}
+
+/** Data is flowing again after a stall: rebuild the gap from the exchange's candles. */
+function onFeedRecovered() {
+  const since = state.staleSince;
+  state.stale = false;
+  state.staleSince = null;
+  state.lastError = null;
+  logger.warn(`live feed recovered after ${Math.round((Date.now() - since) / 1000)}s — repairing bars from REST`);
+  // Now for the gap bars that have already settled, and again once the last
+  // gap bar (the one forming when data returned) has closed and settled.
+  scheduleRepair("feed gap", Date.now(), true);
+  const lastGapBarClose = Math.floor(Date.now() / BAR_3M_MS) * BAR_3M_MS + BAR_3M_MS;
+  scheduleRepair("feed gap, settled", lastGapBarClose + REST_SETTLE_MS + 5_000, true);
+}
+
+/**
+ * Run a bar repair at `atMs`. A blocking repair holds new entries from now
+ * until it has run: bars that are about to be replaced are not traded on.
+ */
+function scheduleRepair(reason, atMs, blocking) {
+  if (blocking) state.repairsPending++;
+  const t = setTimeout(() => {
+    repairBars(reason)
+      .catch((e) => logger.error(`bar repair failed: ${e.message}`))
+      .finally(() => {
+        if (blocking) state.repairsPending = Math.max(0, state.repairsPending - 1);
+      });
+  }, Math.max(0, atMs - Date.now()));
+  t.unref?.();
+}
+
+/**
+ * Replace today's SETTLED bars with Upstox's own candles, for every name and
+ * the index. Bars built while the feed was silent are missing or frozen
+ * mid-bar; settled REST candles matched the exchange exactly in testing.
+ * Bars younger than REST_SETTLE_MS are left alone — their REST candle is not
+ * final yet, and the live-built bar is the better one.
+ */
+async function repairBars(reason) {
+  // One pass at a time; a second request waits for the running one.
+  while (state.repairing) await new Promise((r) => setTimeout(r, 1000));
+  state.repairing = true;
+  const t0 = Date.now();
+  let fixed = 0;
+  try {
+    for (const u of state.underlyings) {
+      if (!u.cashKey) continue;
+      const [b3, b15] = await Promise.all([
+        getIntradayCandles(u.cashKey, "minutes", 3).catch(() => []),
+        getIntradayCandles(u.cashKey, "minutes", 15).catch(() => []),
+      ]);
+      store3m.reconcile(u.cashKey, b3, Date.now(), REST_SETTLE_MS);
+      store15m.reconcile(u.cashKey, b15, Date.now(), REST_SETTLE_MS);
+      fixed++;
+    }
+    const idx = await getIntradayCandles(NIFTY_KEY, "minutes", 3).catch(() => []);
+    storeIndex3m.reconcile(NIFTY_KEY, idx, Date.now(), REST_SETTLE_MS);
+    logger.info(`bar repair (${reason}): ${fixed} names + index rebuilt from REST in ${Math.round((Date.now() - t0) / 1000)}s`);
+  } finally {
+    state.repairing = false;
+  }
+}
+
+/** Diagnostics: recent raw full-feed OHLC blocks for one key. */
+export function debugFeed(key) {
+  return state.feed?.rawOhlc?.get(key) ?? [];
+}
+
+/** True while the feed is delivering. New positions must not open on a dead feed. */
+export function isFeedHealthy() {
+  return Boolean(state.feed) && !state.stale && !state.repairsPending;
+}
+
 function stop() {
   logger.info("market closed — stopping feed");
   // Consumers first, so the paper engine can flatten anything still open while
@@ -295,8 +498,11 @@ function stop() {
       logger.error(`stopped hook failed: ${e.message}`);
     }
   }
+  clearInterval(watchdogTimer);
+  watchdogTimer = null;
   if (state.feed) state.feed.disconnect();
   state.feed = null;
+  state.stale = false;
   clearInterval(priceTimer);
   priceTimer = null;
   flushPrices();
@@ -444,10 +650,17 @@ export function getSnapshot() {
 
 export function getStatus() {
   return {
-    connected: state.connected,
+    // A socket that is open but silent is not connected in any useful sense.
+    connected: state.connected && !state.stale,
+    stale: state.stale,
+    repairing: state.repairing || state.repairsPending > 0,
+    reconnects: state.reconnects,
+    lastDataAt: state.lastTickAt,
     marketOpen: isMarketOpen(),
     hasToken: HAS_TOKEN,
     lastTickTs: state.lastTickTs,
+    feedOpenedAt: state.feedOpenedAt,
+    seededAt: state.seededAt,
     subscribed: state.started ? state.underlyings.length : 0,
     counts: state.lastPayload.counts,
     error: state.lastError,
